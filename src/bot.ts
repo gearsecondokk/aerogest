@@ -4,6 +4,7 @@ import { describeClaudeError, runAgentTurn, type AgentHooks } from "./agent.js";
 import { config } from "./config.js";
 import { cancelRequest, describeFalError, uploadImage } from "./fal.js";
 import { submitVideo, describeError } from "./provider.js";
+import { describeJobSettings } from "./jobinfo.js";
 import { MODELS, defaultOptions, describeOptions, getModel, minImagesFor } from "./models.js";
 import { estimateCost, formatUsd } from "./pricing.js";
 import type { HistoryMessage, Job, PendingDuel, PendingGeneration, Session, Store } from "./store.js";
@@ -303,7 +304,8 @@ export function createBot(store: Store): Bot {
     pushEvent(
       store,
       session.chatId,
-      `[Événement] L'utilisateur a désigné ${getModel(winnerId)?.name ?? winnerId} comme meilleur sur la tâche « ${kind} ». Classement mis à jour. Tiens-en compte pour tes prochaines recommandations.`,
+      `[Événement] L'utilisateur a désigné ${getModel(winnerId)?.name ?? winnerId} comme meilleur sur la tâche « ${kind} ». Classement mis à jour. Tiens-en compte pour tes prochaines recommandations.` +
+        (() => { const w = jobs.find((j) => j.modelId === winnerId); return w ? ` Réglages exacts du gagnant, à reprendre tels quels s'il demande de « refaire la même » : ${describeJobSettings(w)}.` : ""; })(),
     );
   });
 

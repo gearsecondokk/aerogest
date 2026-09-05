@@ -5,6 +5,7 @@ import { describeError, getResult, getStatus } from "./provider.js";
 import { getModel } from "./models.js";
 import { formatUsd } from "./pricing.js";
 import { sendVideoSmart } from "./media.js";
+import { describeJobSettings } from "./jobinfo.js";
 import type { Job, Store } from "./store.js";
 import { esc, truncate } from "./text.js";
 
@@ -145,7 +146,7 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
     pushEvent(
       store,
       job.chatId,
-      `${job.mediaKind === "image" ? "L'image" : "La vidéo"} du job ${job.id} (${model?.name ?? job.modelId}) est prête et vient d'être envoyée à l'utilisateur. URL : ${videoUrl}` +
+      `${job.mediaKind === "image" ? "L'image" : "La vidéo"} du job ${job.id} (${model?.name ?? job.modelId}) est prête et vient d'être envoyée à l'utilisateur. Réglages exacts : ${describeJobSettings(job)}. URL : ${videoUrl}` +
         (job.expandedPrompt
           ? `\nLe modèle a RÉÉCRIT le prompt avant génération. Texte réellement utilisé : « ${job.expandedPrompt.slice(0, 600)} ». Si le rendu s'éloigne du réalisme demandé, c'est probablement là que ça s'est joué — signale-le et propose de relancer avec la réécriture désactivée.`
           : ""),
