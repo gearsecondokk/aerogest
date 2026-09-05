@@ -33,6 +33,8 @@ export interface VideoModel {
   tagline: string;
   /** Résumé du tarif pour l'utilisateur */
   priceSummary: string;
+  /** true si le tarif unitaire varie selon les options (résolution, audio…) : le tarif live fal ne suffit pas à estimer */
+  rateDependsOnOptions?: boolean;
   options: ModelOption[];
   /** Conseils de prompting spécifiques, donnés à Claude */
   promptGuide: string;
@@ -87,6 +89,7 @@ export const MODELS: VideoModel[] = [
   },
   {
     id: "veo31",
+    rateDependsOnOptions: true,
     endpoint: "fal-ai/veo3.1/image-to-video",
     name: "Google Veo 3.1",
     tagline: "Haut de gamme, génère aussi le son (ambiance, dialogues)",
@@ -146,6 +149,7 @@ export const MODELS: VideoModel[] = [
   },
   {
     id: "hailuo02s",
+    rateDependsOnOptions: true,
     endpoint: "fal-ai/minimax/hailuo-02/standard/image-to-video",
     name: "MiniMax Hailuo 02 Standard",
     tagline: "Le moins cher, bons mouvements de caméra, 6 ou 10 s",
@@ -196,6 +200,7 @@ export const MODELS: VideoModel[] = [
   },
   {
     id: "wan25",
+    rateDependsOnOptions: true,
     endpoint: "fal-ai/wan-25-preview/image-to-video",
     name: "Wan 2.5",
     tagline: "Bon marché, jusqu'à 1080p, 5 ou 10 s",
@@ -233,6 +238,7 @@ export const MODELS: VideoModel[] = [
   },
   {
     id: "seedance1p",
+    rateDependsOnOptions: true,
     endpoint: "fal-ai/bytedance/seedance/v1/pro/image-to-video",
     name: "ByteDance Seedance 1.0 Pro",
     tagline: "Très bon en narration multi-plans, 2 à 12 s",

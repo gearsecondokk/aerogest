@@ -55,10 +55,14 @@ export async function estimateCost(model: VideoModel, options: Options): Promise
   const estimate: CostEstimate = { usd, billedSeconds };
   if (live) {
     estimate.live = live;
-    if (/second/i.test(live.unit)) {
-      estimate.liveUsd = live.unit_price * billedSeconds;
-    } else if (/video/i.test(live.unit)) {
-      estimate.liveUsd = live.unit_price;
+    // fal ne renvoie qu'un tarif de base par endpoint : on ne s'en sert pour chiffrer
+    // que si le prix du modèle ne dépend pas des options (résolution, audio…).
+    if (!model.rateDependsOnOptions) {
+      if (/second/i.test(live.unit)) {
+        estimate.liveUsd = live.unit_price * billedSeconds;
+      } else if (/video/i.test(live.unit)) {
+        estimate.liveUsd = live.unit_price;
+      }
     }
   }
   return estimate;
