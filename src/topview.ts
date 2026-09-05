@@ -105,6 +105,17 @@ export function normalizeRefs(prompt: string): string {
   return prompt.replace(/(?<![<\w])@?\[?[Ii]mage\s?(\d+)\]?(?![\w>])/g, "<<<Image$1>>>");
 }
 
+/** TopView refuse (code 4000) toute image fournie qui n'est pas citée dans le
+ *  prompt. Plutôt que d'en écarter — l'utilisateur les a empilées exprès —, on
+ *  ajoute une phrase neutre qui cite les manquantes. */
+export function citeAllImages(prompt: string, count: number): string {
+  const cited = new Set([...prompt.matchAll(/<<<Image(\d+)>>>/g)].map((m) => Number(m[1])));
+  const missing: string[] = [];
+  for (let i = 1; i <= count; i++) if (!cited.has(i)) missing.push(`<<<Image${i}>>>`);
+  if (missing.length === 0) return prompt;
+  return `${prompt.trim().replace(/[.\s]+$/, "")}. Additional references: ${missing.join(", ")}.`;
+}
+
 /** Famille de tâche TopView, encodée en préfixe du requestId ("t2i:…", "i2i:…")
  *  pour que le poller sache quel endpoint interroger. Sans préfixe : image→vidéo. */
 type Task = "i2v" | "omni" | "t2i" | "i2i";
@@ -138,7 +149,7 @@ export async function submitVideo(model: string, input: Record<string, unknown>)
     if (ids.length === 0) throw new Error("TopView : aucune image de référence fournie.");
     const body: Record<string, unknown> = {
       model,
-      prompt: normalizeRefs(String(input.prompt ?? "")),
+      prompt: citeAllImages(normalizeRefs(String(input.prompt ?? "")), ids.length),
       inputImages: ids.map((fileId, i) => ({ fileId, name: `Image${i + 1}` })),
       aspectRatio: input.aspectRatio ?? "9:16",
       resolution: input.resolution,

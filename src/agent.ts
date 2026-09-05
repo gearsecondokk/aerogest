@@ -137,7 +137,9 @@ MODE RÉFÉRENCE→VIDÉO (modèles marqués RÉFÉRENCE dans le catalogue)
 - Ces modèles ne prennent PAS une image à animer : ils prennent 2 à 4 photos du MÊME sujet pour tenir
   son identité d'un clip à l'autre. C'est le mode à conseiller dès que l'utilisateur veut une SÉRIE sur
   le même modèle : sinon le visage change d'un post à l'autre et l'illusion tombe.
-- Toutes les images envoyées dans la conversation sont empilées et transmises ensemble (8 max). Si tu
+- Toutes les images envoyées dans la conversation sont empilées et transmises ensemble (8 max) : cite
+  CHACUNE dans le prompt (TopView refuse une image non citée ; le bot complète, mais mieux vaut dire à
+  quoi elle sert). Si tu
   n'en as qu'une, demande-en d'autres : de face, de trois quarts, de profil, et un plan plus large.
 - Ici il FAUT décrire le personnage (coupe, couleur des yeux, morphologie, tenue) en plus de l'action —
   l'inverse de l'image→vidéo où redécrire le sujet fait dériver le visage.

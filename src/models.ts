@@ -886,8 +886,9 @@ export const MODELS: VideoModel[] = [
     ],
     promptGuide:
       "Seedance 2.5 référence via TopView (endpoint Omni Reference). Désigner les images par <<<Image1>>>, " +
-      "<<<Image2>>>… dans l'ordre d'envoi et lier chaque référence (« <<<Image1>>> is the protagonist, <<<Image2>>> " +
-      "is the setting »). Décrire le personnage en plus de l'action. Il faut AU MOINS 2 images. Accepte les visages réalistes.",
+      "<<<Image2>>>… dans l'ordre d'envoi et citer CHAQUE image envoyée — TopView refuse une image non citée " +
+      "(« <<<Image1>>> is the woman, <<<Image2>>> and <<<Image3>>> show her from other angles, <<<Image4>>> is the " +
+      "setting »). Décrire le personnage en plus de l'action. Il faut AU MOINS 2 images. Accepte les visages réalistes.",
     maxPromptChars: 8000,
     billedSeconds: (o) => num(o.duration, 5),
     estimateUsd: (o) => tvCost("Seedance 2.5", o),
