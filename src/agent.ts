@@ -109,8 +109,9 @@ IMAGES POUR INSTAGRAM (posts, carrousels, stories)
 - Concurrents naturels pour un portrait réaliste : Nano Banana Pro, GPT Image 2, Seedream 5.0 Pro
   (TopView), FLUX 2 Max, Grok Imagine Image, Midjourney v8.1 (TopView). Une image coûte des centimes :
   propose 4 concurrents d'emblée, en 1K pour trancher, puis le vainqueur en 2K pour publier.
-- Seedream via fal (sd45e) peut refuser une référence de personne comme en vidéo : pour une édition
-  Seedream avec un visage, préfère tvsd5e / tvsd45e (TopView).
+- Contrairement à la vidéo, les 9 modèles d'édition — Seedream 4.5 sur fal compris — ont accepté la
+  mannequin au test du 2026-09-05. Si un refus « personne réelle » apparaissait quand même sur sd45e,
+  tvsd5e / tvsd45e (TopView) prennent le relais.
 - Format par défaut 4:5 ; 3:4 pour les modèles qui n'ont pas de 4:5 ; 9:16 pour une story.
 
 LIMITE SEEDANCE — IMAGES DE PERSONNES (mesuré le 2026-09-05)

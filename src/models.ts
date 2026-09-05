@@ -1020,12 +1020,12 @@ export const MODELS: VideoModel[] = [
     minImages: 1,
     endpoint: "fal-ai/bytedance/seedream/v4.5/edit",
     name: "Seedream 4.5 édition (image, fal)",
-    tagline: "ÉDITION D'APRÈS RÉFÉRENCES — ⚠️ route fal : peut refuser une référence de personne",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES — a accepté la mannequin au test du 2026-09-05, contrairement à la vidéo",
     priceSummary: "0,04 $ l'image",
     options: [imageRatioOption(["3:4", "auto", "1:1", "9:16", "2:3", "16:9"], "3:4")],
     promptGuide:
-      "Désigner les références par « the woman in image 1 ». Si fal refuse la référence (filtre personne " +
-      "réelle), basculer sur Seedream via TopView (tvsd5e / tvsd45e).",
+      "Désigner les références par « the woman in image 1 ». Contrairement à Seedance en vidéo, la référence de " +
+      "personne est passée au test ; si un refus survenait, Seedream via TopView (tvsd5e / tvsd45e) prend le relais.",
     maxPromptChars: 3000,
     billedSeconds: () => 0,
     estimateUsd: () => 0.04,
@@ -1214,7 +1214,7 @@ export const MODELS: VideoModel[] = [
     rateDependsOnOptions: true,
     endpoint: "Seedream 5.0 Pro",
     name: "Seedream 5.0 Pro édition (image, TopView)",
-    tagline: "ÉDITION D'APRÈS RÉFÉRENCES (14 max) — la route Seedream qui accepte les visages",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES (14 max) — le dernier Seedream, uniquement via TopView",
     priceSummary: "0,40 crédit en 1K · 0,80 en 2K → 0,08 / 0,16 $",
     options: [imageRatioOption(["3:4", "auto", "1:1", "9:16", "2:3", "16:9"], "3:4"), imageResolutionOption(["1K", "2K"], "2K")],
     promptGuide: "Désigner les références par « the woman in image 1 ». Ancrer l'identité, décrire ce qui change.",
@@ -1237,7 +1237,7 @@ export const MODELS: VideoModel[] = [
     rateDependsOnOptions: true,
     endpoint: "Seedream 4.5",
     name: "Seedream 4.5 édition (image, TopView)",
-    tagline: "ÉDITION D'APRÈS RÉFÉRENCES à 0,04 $ — même prix que fal, mais accepte les visages",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES à 0,04 $ — même prix que fal, route de secours et comparaison intra-famille",
     priceSummary: "0,20 crédit → 0,04 $ (2K ou 4K)",
     options: [imageRatioOption(["3:4", "auto", "1:1", "9:16", "16:9"], "3:4"), imageResolutionOption(["2K", "4K"], "2K")],
     promptGuide: "Mêmes règles que Seedream 4.5 édition. À mettre face au 5.0 Pro : si la différence ne se voit pas, c'est lui.",

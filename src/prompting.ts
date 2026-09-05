@@ -311,8 +311,8 @@ SYNTAXE PAR MODÈLE (IMAGE)
   l'image. Qualité « high » pour publier, « medium » pour dégrossir (4 fois moins cher).
 - Seedream 4.5 (fal) et Seedream 5.0 Pro (TopView) : description naturelle + termes photo (focale,
   lumière). En édition, désigner les références par « the woman in image 1 ». Pas de 4:5 → 3:4. Rendu
-  peau très crédible. Attention : la version fal de Seedream applique le même filtre « personne réelle »
-  que la vidéo en édition ; si elle refuse une référence, la route TopView la prend.
+  peau très crédible. Au test du 2026-09-05, l'édition Seedream sur fal a accepté la mannequin
+  (contrairement à Seedance en vidéo) ; en cas de refus, la route TopView prend le relais.
 - FLUX 2 Max (Black Forest Labs, fal) : prompt descriptif structuré — sujet, décor, lumière, appareil,
   ambiance — le plus photographique sur la peau et les textures. Facturé au mégapixel : le 2K coûte 3 fois
   le 1K.
