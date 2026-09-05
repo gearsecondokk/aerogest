@@ -484,7 +484,7 @@ export function createBot(store: Store): Bot {
         requestId = await submitVideo(model.provider ?? "fal", model.endpoint, input);
       } catch (err) {
         // Un concurrent qui tombe ne doit pas faire échouer tout le duel.
-        await ctx.reply(`⚠️ ${esc(model.name)} n'a pas pu être lancé : ${esc(describeError(model.provider ?? "fal", err))}`, { parse_mode: "HTML" });
+        await ctx.reply(`⚠️ ${esc(model.name)} n'a pas pu être lancé : ${esc(describeError(model.provider ?? "fal", err, model.kind ?? "video"))}`, { parse_mode: "HTML" });
         continue;
       }
       const est = await estimateCost(model, opts);
@@ -541,7 +541,7 @@ export function createBot(store: Store): Bot {
       requestId = await submitVideo(model.provider ?? "fal", model.endpoint, input);
     } catch (err) {
       console.error("Erreur submit :", err);
-      const reason = describeError(model.provider ?? "fal", err);
+      const reason = describeError(model.provider ?? "fal", err, model.kind ?? "video");
       await ctx.reply(`❌ Impossible de lancer la génération : ${esc(reason)}`, { parse_mode: "HTML" });
       await converse(ctx, session, {
         role: "user",

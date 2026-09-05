@@ -38,7 +38,7 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
       status = await getStatus(job.provider ?? "fal", job.endpoint, job.requestId);
     } catch (err) {
       // 404/410 etc. : la tâche n'existe plus côté fournisseur
-      const msg = describeError(job.provider ?? "fal", err);
+      const msg = describeError(job.provider ?? "fal", err, job.mediaKind ?? "video");
       if (/\b(404|410)\b/.test(msg)) {
         await failJob(job, `Requête introuvable côté fournisseur (${msg})`);
       } else {
@@ -87,7 +87,7 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
       await deliverVideo(job);
       await askDuelVerdict(job).catch((e) => console.warn("verdict duel :", e));
     } catch (err) {
-      await failJob(job, describeError(job.provider ?? "fal", err));
+      await failJob(job, describeError(job.provider ?? "fal", err, job.mediaKind ?? "video"));
       await askDuelVerdict(job).catch(() => {});
     }
   }

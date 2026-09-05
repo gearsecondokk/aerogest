@@ -28,8 +28,8 @@ export function getResult(provider: Provider, endpoint: string, id: string): Pro
   return falProvider.getResult(endpoint, id);
 }
 
-export function describeError(provider: Provider, err: unknown): string {
+export function describeError(provider: Provider, err: unknown, kind: "image" | "video" = "video"): string {
   if (provider === "byteplus") return byteplus.describeError(err);
   if (provider === "topview") return topview.describeError(err);
-  return falProvider.describeFalError(err);
+  return falProvider.describeFalError(err, kind);
 }

@@ -346,6 +346,14 @@ IMAGES POUR INSTAGRAM — DOCTRINE
   distinctives (taches de rousseur, frange, couleur des yeux, morphologie), générer plusieurs variantes,
   garder la meilleure comme référence pour tout ce qui suit.
 - Carrousel : mêmes références, même lumière, même tenue ; on ne fait varier que la pose et l'angle.
+- JAMAIS « replace the woman in image 3 with the woman from the selfie » : c'est un échange de personne
+  dans une photo existante, et Google (Nano Banana), OpenAI (GPT Image) comme Black Forest Labs (FLUX)
+  le refusent — content_policy_violation sans explication, constaté le 2026-09-05 sur les trois. Ce qui
+  passe partout : générer la scène À NEUF avec les références du mannequin, en décrivant décor, pose et
+  lumière (« the same woman as in the references, lying on a black Yamaha jet ski in turquoise water »).
+  Une photo d'inspiration sert à DÉCRIRE la scène, pas à être modifiée — et si elle vient de quelqu'un
+  d'autre, c'est aussi une question de droits. Seedream (TopView) a accepté ce type de requête, mais ce
+  n'est pas une raison de la formuler ainsi.
 - Les duels d'images coûtent des centimes : ici on peut comparer 4 modèles d'un coup sans hésiter, et
   c'est le bon moment pour trancher entre les familles avant de produire en volume.
 

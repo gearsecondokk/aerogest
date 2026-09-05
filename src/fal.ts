@@ -66,10 +66,7 @@ export async function cancelRequest(endpoint: string, requestId: string): Promis
 }
 
 /** Message d'erreur lisible pour l'utilisateur. */
-export function describeFalError(err: unknown): string {
-  // Le refus « personne réelle » de Seedance traverse fal tel quel
-  // (content_policy_violation / partner_validation_failed) : le traduire
-  // en clair vaut mieux qu'un « paramètres refusés » trompeur.
+export function describeFalError(err: unknown, kind: "image" | "video" = "video"): string {
   const hay = (() => {
     try {
       if (err instanceof ValidationError) return JSON.stringify(err.fieldErrors) + " " + err.message;
@@ -79,11 +76,31 @@ export function describeFalError(err: unknown): string {
       return String(err);
     }
   })();
-  if (/content_policy_violation|likenesses of real people|may contain real person/i.test(hay)) {
+  // Deux refus différents se cachent derrière content_policy_violation :
+  //  - le filtre « personne réelle » de ByteDance (partner_validation_failed,
+  //    « likenesses of real people ») qui traverse fal tel quel ;
+  //  - la modération générique du modèle (« flagged by a content checker »),
+  //    sans motif — le 2026-09-05, Nano Banana, GPT Image et FLUX ont tous
+  //    refusé un « remplace la femme de cette photo par celle du selfie ».
+  if (/likenesses of real people|may contain real person|partner_validation_failed/i.test(hay)) {
     return (
       "Le fournisseur du modèle a refusé l'image d'entrée : son filtre y voit une personne réelle, " +
       "et un mannequin IA réaliste le déclenche aussi. Aucun réglage ne le lève. " +
-      "Pour animer cette image : Wan 3.0, Kling 3.0, H3 Max ou Veo."
+      (kind === "video"
+        ? "Pour animer cette image : Seedance via TopView, Wan 3.0, Kling 3.0, H3 Max, Grok ou Veo."
+        : "Pour cette image : un autre modèle d'édition, ou Seedream via TopView.")
+    );
+  }
+  if (/content_policy_violation|content checker/i.test(hay)) {
+    return (
+      "Refusé par le filtre de contenu du modèle — fal ne donne pas le motif (« flagged by a content checker »). " +
+      (kind === "image"
+        ? "Cause la plus fréquente : demander de REMPLACER une personne dans une photo existante ou d'échanger un visage — " +
+          "Google, OpenAI et Black Forest Labs refusent ce type de requête. Ce qui passe : générer la scène à neuf avec les " +
+          "références du mannequin (décrire le décor et la pose), sans photo à modifier. Les politiques diffèrent d'un modèle " +
+          "à l'autre : un autre concurrent du duel a pu accepter."
+        : "Causes fréquentes : personnage public ou marque reconnaissable, nudité, mineur, violence, ou une formulation " +
+          "ambiguë. Reformule sans ces éléments, ou essaie un autre modèle du catalogue.")
     );
   }
   if (err instanceof ValidationError) {
