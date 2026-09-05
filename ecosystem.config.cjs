@@ -4,6 +4,9 @@ module.exports = {
     {
       name: "video-bot",
       script: "dist/index.js",
+      // node systeme = v20, or le projet exige >=22 : seul ce bot tourne sur le
+      // node 22 installe a part. rgbot et fnacbot restent en 20, intouches.
+      interpreter: "/opt/node22/bin/node",
       cwd: "/opt/video-bot",
       env: { NODE_ENV: "production" },
       watch: false,

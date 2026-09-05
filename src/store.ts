@@ -22,7 +22,11 @@ export interface Session {
   chatId: number;
   /** Conversation avec Claude (messages user/assistant + résultats d'outils) */
   history: HistoryMessage[];
+  /** Dernière image reçue — c'est elle qu'utilise l'image→vidéo. */
   imageUrl?: string;
+  /** Toutes les images de la conversation, dans l'ordre. Le mode
+   *  référence→vidéo s'en sert pour tenir un personnage cohérent. */
+  imageUrls?: string[];
   imageFileId?: string;
   pending?: PendingGeneration;
   updatedAt: number;
@@ -31,6 +35,10 @@ export interface Session {
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
 export interface Job {
+  /** Fournisseur ayant exécuté ce job (défaut fal, pour les jobs anciens). */
+  provider?: "fal" | "byteplus";
+  /** Prompt après réécriture par le modèle, si communiqué. */
+  expandedPrompt?: string | null;
   id: string;
   chatId: number;
   userId: number;

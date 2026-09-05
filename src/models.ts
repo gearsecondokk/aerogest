@@ -26,6 +26,9 @@ export type Options = Record<string, OptionValue>;
 export interface VideoModel {
   /** Identifiant court utilisé dans les callbacks Telegram (max ~20 chars) */
   id: string;
+  /** Fournisseur d'exécution. Par défaut fal ; 'byteplus' appelle l'API
+   *  ModelArk en direct, environ deux fois moins chère sur Seedance. */
+  provider?: "fal" | "byteplus";
   /** Endpoint fal.ai */
   endpoint: string;
   name: string;
@@ -41,11 +44,21 @@ export interface VideoModel {
   maxPromptChars?: number;
   /** Durée facturée (secondes) pour ces options */
   billedSeconds: (opts: Options) => number;
-  /** Estimation locale en USD */
+  /** Estimation locale en USD (repli documenté, volontairement pessimiste) */
   estimateUsd: (opts: Options) => number;
+  /** Rapport entre le palier choisi et le tarif de BASE renvoyé par l'API
+   *  fal. Permet de chiffrer à partir du prix réel plutôt que d'une
+   *  constante — donc de suivre automatiquement promos et changements de
+   *  tarif. À ne définir QUE si le palier de base est identifié avec
+   *  certitude, sinon on garde l'estimation documentée. */
+  rateMultiplier?: (opts: Options) => number;
   /** Construit le payload d'entrée fal.ai */
+  /** true = le modèle attend des images de RÉFÉRENCE (2 à 4 idéalement)
+   *  et non une image de départ à animer. */
+  needsReferences?: boolean;
   buildInput: (args: {
     imageUrl: string;
+    imageUrls: string[];
     prompt: string;
     negativePrompt?: string | null;
     opts: Options;
@@ -58,12 +71,42 @@ const num = (v: OptionValue | undefined, fallback: number): number => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+/** Format de sortie. Décisif pour TikTok/Reels : en référence→vidéo il n'y a
+ *  aucune image de départ dont hériter, donc sans ce réglage on tombe sur du
+ *  paysage. Valeurs tirées du schéma OpenAPI de fal, endpoint par endpoint. */
+const ratioOption = (values: string[], def: string): ModelOption => ({
+  key: "aspect_ratio",
+  label: "📐 Format ?",
+  choices: values.map((v) => ({
+    value: v,
+    label: v === "9:16" ? "9:16 (TikTok/Reels)" : v === "adaptive" || v === "auto" ? `${v} (comme l'image)` : v,
+  })),
+  default: def,
+});
+
 const durationOption = (values: number[], def: number): ModelOption => ({
   key: "duration",
   label: "⏱ Durée de la vidéo ?",
   choices: values.map((v) => ({ value: String(v), label: `${v} s` })),
   default: String(def),
 });
+
+
+/* ── Tarification BytePlus ────────────────────────────────────────────
+ * Facturation au token, formule officielle :
+ *   tokens = (largeur × hauteur × durée × 24) / 1024
+ * Vérifiée contre les chiffres publiés : 720p en Seedance 2.5 donne
+ * 21 600 tokens/s, soit 0,231 $/s au tarif de 10,70 $/M — exactement ce
+ * qu'annonce BytePlus. L'aire étant identique en 16:9 et en 9:16, le format
+ * ne change pas le prix.
+ */
+const BP_PIXELS: Record<string, number> = { "480p": 854 * 480, "720p": 1280 * 720, "1080p": 1920 * 1080 };
+const bpTokensPerSec = (res: string) => ((BP_PIXELS[res] ?? BP_PIXELS["720p"]) * 24) / 1024;
+/** usdPerMillion peut dépendre du palier (promo 1080p sur la 2.5). */
+const bpCost = (o: Options, usdPerMillion: (res: string) => number, def = 5) => {
+  const res = String(o.resolution ?? "720p");
+  return num(o.duration, def) * bpTokensPerSec(res) * (usdPerMillion(res) / 1_000_000);
+};
 
 export const MODELS: VideoModel[] = [
   {
@@ -227,6 +270,7 @@ export const MODELS: VideoModel[] = [
       const rate = o.resolution === "1080p" ? 0.15 : o.resolution === "480p" ? 0.05 : 0.1;
       return num(o.duration, 5) * rate;
     },
+    rateMultiplier: (o) => (o.resolution === "1080p" ? 3 : o.resolution === "480p" ? 1 : 2),
     buildInput: ({ imageUrl, prompt, negativePrompt, opts }) => ({
       prompt,
       image_url: imageUrl,
@@ -236,15 +280,18 @@ export const MODELS: VideoModel[] = [
       ...(negativePrompt ? { negative_prompt: negativePrompt.slice(0, 500) } : {}),
     }),
   },
+
   {
-    id: "seedance1p",
+    id: "wan3",
     rateDependsOnOptions: true,
-    endpoint: "fal-ai/bytedance/seedance/v1/pro/image-to-video",
-    name: "ByteDance Seedance 1.0 Pro",
-    tagline: "Très bon en narration multi-plans, 2 à 12 s",
-    priceSummary: "≈ 2,5 $ / million de tokens vidéo → 1080p 5 s ≈ 0,62 $ · 720p 5 s ≈ 0,27 $",
+    endpoint: "alibaba/wan-3.0/image-to-video",
+    name: "Wan 3.0",
+    tagline: "Dernier Wan — jusqu'à 1080p, audio inclus, 2 à 30 s",
+    priceSummary: "480p : 0,05 $/s · 720p : 0,10 $/s · 1080p : 0,20 $/s (audio inclus)",
     options: [
-      durationOption([3, 5, 8, 10, 12], 5),
+      ratioOption(["adaptive", "9:16", "16:9", "1:1", "4:3", "3:4"], "adaptive"),
+      { key: "rewrite", label: "✍️ Réécriture auto du prompt ?", choices: [{ value: "true", label: "Oui (défaut)" }, { value: "false", label: "Non — garder mon prompt tel quel" }], default: "true" },
+      durationOption([5, 10], 5),
       {
         key: "resolution",
         label: "🖥 Résolution ?",
@@ -253,30 +300,373 @@ export const MODELS: VideoModel[] = [
           { value: "720p", label: "720p" },
           { value: "1080p", label: "1080p" },
         ],
-        default: "1080p",
+        default: "720p",
+      },
+      { key: "audio", label: "🔊 Générer l'audio ?", choices: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }], default: "true" },
+    ],
+    promptGuide:
+      "Wan 3.0 (image-to-video, audio natif). Structure en 4 blocs DANS CET ORDRE : mouvement du sujet, " +
+      "mouvement de caméra, environnement, rythme. Le modèle lit le début du prompt avec le plus d'attention. " +
+      "Garder la caméra quasi immobile. ⚠️ le champ image s'appelle start_image_url.",
+    maxPromptChars: 8000, // limite officielle 20 000 ; on plafonne bien en dessous
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => {
+      const rate = o.resolution === "1080p" ? 0.2 : o.resolution === "480p" ? 0.05 : 0.1;
+      return num(o.duration, 5) * rate;
+    },
+    rateMultiplier: (o) => (o.resolution === "1080p" ? 4 : o.resolution === "480p" ? 1 : 2),
+    buildInput: ({ imageUrl, prompt, opts }) => ({
+      prompt,
+      // ⚠️ Wan 3.0 attend start_image_url et NON image_url (vérifié via l'erreur
+      // de validation de l'API fal : "start_image_url Field required").
+      start_image_url: imageUrl,
+      duration: num(opts.duration, 5),
+      resolution: String(opts.resolution ?? "720p"),
+      aspect_ratio: String(opts.aspect_ratio ?? "adaptive"),
+      audio: String(opts.audio ?? "true") === "true",
+      // Le réécrivain de prompt est activé par défaut chez Alibaba et peut
+      // défaire une formulation réaliste travaillée. On le rend débrayable.
+      enable_prompt_expansion: String(opts.rewrite ?? "true") === "true",
+    }),
+  },
+  {
+    id: "h3max",
+    rateDependsOnOptions: true,
+    endpoint: "minimax/h3-max/image-to-video",
+    name: "MiniMax H3 Max",
+    tagline: "Hailuo 3 Max — 5 à 15 s, audio inclus, très bon rapport qualité/prix",
+    priceSummary: "480p : 0,05 $/s · 768p : 0,08 $/s (audio inclus)",
+    options: [
+      { key: "expansion", label: "✍️ Réécriture du prompt ?", choices: [{ value: "balanced", label: "Rapide (~1 s)" }, { value: "quality", label: "Soignée (~30 s)" }], default: "balanced" },
+      durationOption([5, 10, 15], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "768p", label: "768p" },
+        ],
+        default: "768p",
       },
     ],
     promptGuide:
-      "ByteDance Seedance 1.0 Pro. English prompt describing action, camera and style; it handles multi-shot narration well " +
-      "(you can describe 2-3 consecutive shots for longer durations). Keep the first shot consistent with the image. No audio.",
+      "MiniMax H3 Max (image-to-video, audio natif). Trois blocs : sujet+action, direction caméra, ambiance. " +
+      "UNE SEULE instruction de caméra dominante (plan fixe OU lent travelling) — empiler les mouvements est " +
+      "la première cause d'échec. Écrire la caméra en langage de tournage naturel. Préciser ce qui reste STABLE.",
+    maxPromptChars: 1500,
     billedSeconds: (o) => num(o.duration, 5),
-    estimateUsd: (o) => {
-      // tokens = (h × w × fps × durée) / 1024 ; 2,5 $ par million de tokens ; fps 24 ; dimensions 16:9
-      const dims: Record<string, [number, number]> = {
-        "480p": [864, 480],
-        "720p": [1280, 720],
-        "1080p": [1920, 1080],
-      };
-      const [w, h] = dims[String(opts(o))] ?? dims["1080p"];
-      const tokens = (h * w * 24 * num(o.duration, 5)) / 1024;
-      return (tokens / 1_000_000) * 2.5;
-    },
+    estimateUsd: (o) => num(o.duration, 5) * (o.resolution === "480p" ? 0.05 : 0.08),
+    rateMultiplier: (o) => (o.resolution === "480p" ? 1 : 1.6),
     buildInput: ({ imageUrl, prompt, opts }) => ({
       prompt,
       image_url: imageUrl,
-      duration: String(num(opts.duration, 5)),
-      resolution: String(opts.resolution ?? "1080p"),
-      aspect_ratio: "auto",
+      // Schéma fal : duration est un ENTIER ici (et une chaîne chez Seedance).
+      duration: num(opts.duration, 5),
+      // ⚠️ H3 Max exige un P MAJUSCULE : "480P" / "768P".
+      resolution: String(opts.resolution ?? "768p").replace(/p$/, "P"),
+      // Listé comme requis dans le schéma fal.
+      prompt_expansion_mode: String(opts.expansion ?? "balanced"),
+    }),
+  },
+
+  {
+    id: "wan3ref",
+    rateDependsOnOptions: true,
+    needsReferences: true,
+    endpoint: "alibaba/wan-3.0-prime/reference-to-video",
+    name: "Wan 3.0 Prime — référence",
+    tagline: "RÉFÉRENCE→VIDÉO : garde le même personnage d'un clip à l'autre",
+    priceSummary: "480p : 0,068 $/s · 720p : 0,14 $/s · 1080p : 0,28 $/s (audio inclus)",
+    options: [
+      ratioOption(["9:16", "16:9", "1:1", "4:3", "3:4", "adaptive"], "9:16"),
+      { key: "rewrite", label: "✍️ Réécriture auto du prompt ?", choices: [{ value: "true", label: "Oui (défaut)" }, { value: "false", label: "Non — garder mon prompt tel quel" }], default: "true" },
+      durationOption([5, 10], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p" },
+        ],
+        default: "720p",
+      },
+    ],
+    promptGuide:
+      "Wan 3.0 Prime (reference-to-video). Prend 2 à 4 images du MÊME sujet pour tenir son identité d'un clip " +
+      "à l'autre. Contrairement à l'image→vidéo, il FAUT décrire le personnage (traits invariants : coupe, " +
+      "couleur des yeux, morphologie) en plus de l'action, sinon la cohérence se perd. Structure Wan classique : " +
+      "action du sujet, caméra, environnement, rythme.",
+    maxPromptChars: 8000, // limite officielle 20 000 ; on plafonne bien en dessous
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => {
+      const rate = o.resolution === "1080p" ? 0.28 : o.resolution === "480p" ? 0.068 : 0.14;
+      return num(o.duration, 5) * rate;
+    },
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      prompt,
+      reference_image_urls: imageUrls,
+      duration: num(opts.duration, 5),
+      resolution: String(opts.resolution ?? "720p"),
+      aspect_ratio: String(opts.aspect_ratio ?? "9:16"),
+      enable_prompt_expansion: String(opts.rewrite ?? "true") === "true",
+    }),
+  },
+  {
+    id: "h3maxref",
+    rateDependsOnOptions: true,
+    needsReferences: true,
+    endpoint: "minimax/h3-max/reference-to-video",
+    name: "MiniMax H3 Max — référence",
+    tagline: "RÉFÉRENCE→VIDÉO le moins cher — 4 premières images offertes",
+    priceSummary: "480p : 0,05 $/s · 768p : 0,08 $/s · références : 4 premières offertes",
+    options: [
+      { key: "expansion", label: "✍️ Réécriture du prompt ?", choices: [{ value: "balanced", label: "Rapide (~1 s)" }, { value: "quality", label: "Soignée (~30 s)" }], default: "balanced" },
+      ratioOption(["9:16", "16:9", "21:9", "1:1", "4:3", "3:4", "adaptive"], "9:16"),
+      durationOption([5, 10], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "768p", label: "768p" },
+        ],
+        default: "768p",
+      },
+    ],
+    promptGuide:
+      "MiniMax H3 Max (reference-to-video). Le « H3 Max » de fal est un variant POST-ENTRAÎNÉ de MiniMax H3 "
+      +
+      "(pas le H3-Max natif, qui lui ne fait pas de référence) : réglé pour mieux suivre le prompt et pour "
+      +
+      "l esthétique. Références désignées dans le prompt par Image 1, Image 2, Video 1, Audio 1 selon l ordre "
+      +
+      "d envoi. Limite fal : 12 fichiers de référence au TOTAL (images + vidéos + audios). Un audio ne peut "
+      +
+      "jamais être la seule référence. 4 premières images non facturées. " +
+      "Décrire le personnage ET l'action. UNE SEULE instruction de caméra dominante, comme en image→vidéo.",
+    maxPromptChars: 1500,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => num(o.duration, 5) * (o.resolution === "480p" ? 0.05 : 0.08),
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      prompt,
+      reference_image_urls: imageUrls,
+      duration: num(opts.duration, 5),
+      // ⚠️ P majuscule exigé (vérifié via la validation fal).
+      resolution: String(opts.resolution ?? "768p").replace(/p$/, "P"),
+      aspect_ratio: String(opts.aspect_ratio ?? "9:16"),
+      prompt_expansion_mode: String(opts.expansion ?? "balanced"),
+    }),
+  },
+
+  {
+    id: "grok15",
+    rateDependsOnOptions: true,
+    endpoint: "xai/grok-imagine-video/v1.5/image-to-video",
+    name: "Grok Imagine 1.5",
+    tagline: "xAI — prompt en langage naturel, pas de negative prompt",
+    priceSummary: "480p : 0,08 $/s · 720p : 0,14 $/s · 1080p : 0,25 $/s",
+    options: [
+      durationOption([6, 10], 6),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p" },
+        ],
+        default: "720p",
+      },
+    ],
+    promptGuide:
+      "Grok Imagine 1.5 (image-to-video). Prompt en LANGAGE NATUREL, comme un brief à un photographe — 30 à 80 " +
+      "mots, pas d'empilement de mots-clés. ⚠️ Grok IGNORE les negative prompts : tout doit être formulé en " +
+      "POSITIF (« clear natural skin » et non « no blemishes »). Aucun paramètre de format : le cadrage est " +
+      "hérité de l'image d'entrée. Prompt limité à 4096 caractères.",
+    maxPromptChars: 4096,
+    billedSeconds: (o) => num(o.duration, 6),
+    // ⚠️ PAS de rateMultiplier ici. L'API de tarification de fal renvoie 0,01 $/s
+    // pour cet endpoint, mais ce n'est PAS le tarif vidéo : c'est le supplément
+    // par image de référence. Le vrai tarif est 0,08 / 0,14 / 0,25 selon le
+    // palier. S'y fier aurait sous-estimé le coût d'un facteur 8 à 25.
+    estimateUsd: (o) =>
+      num(o.duration, 6) * (o.resolution === "1080p" ? 0.25 : o.resolution === "480p" ? 0.08 : 0.14),
+    buildInput: ({ imageUrl, prompt, opts }) => ({
+      prompt,
+      image_url: imageUrl,
+      duration: num(opts.duration, 6),
+      resolution: String(opts.resolution ?? "720p"),
+    }),
+  },
+  {
+    id: "bp25",
+    provider: "byteplus",
+    rateDependsOnOptions: true,
+    endpoint: "dreamina-seedance-2-5-260628",
+    name: "Seedance 2.5 (BytePlus direct)",
+    tagline: "Même modèle que sur fal, moitié prix — audio, jusqu'à 30 s",
+    priceSummary: "≈ 0,103 $/s en 480p · 0,231 $/s en 720p · 0,41 $/s en 1080p (promo −28 % jusqu'au 17/09)",
+    options: [
+      durationOption([4, 5, 10], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p" },
+        ],
+        default: "720p",
+      },
+      { key: "generate_audio", label: "🔊 Générer l'audio ?", choices: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }], default: "true" },
+      { key: "camera_fixed", label: "🎥 Caméra fixe ?", choices: [{ value: "false", label: "Non (mouvement libre)" }, { value: "true", label: "Oui — plan verrouillé" }], default: "false" },
+    ],
+    promptGuide:
+      "Seedance 2.5 via l'API BytePlus. Mêmes règles de rédaction que la version fal (résumé en une phrase " +
+      "Sujet + Lieu + Événement + Style + Caméra, puis découpage horodaté en secondes entières sans trou). " +
+      "⚠️ Ici les références se désignent par @Image1, @Video1 dans le prompt (et non « Image 1 » comme chez fal). " +
+      "Négatif possible uniquement sur sous-titres et audio. camera_fixed verrouille le plan — utile pour le réalisme.",
+    maxPromptChars: 8000,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => bpCost(o, (res) => (res === "1080p" ? 11.7 * 0.72 : 10.7)),
+    buildInput: ({ imageUrl, prompt, opts }) => ({
+      content: [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: imageUrl }, role: "first_frame" },
+      ],
+      resolution: String(opts.resolution ?? "720p"),
+      // Le mode première image VERROUILLE le format sur celui de l'image :
+      // la doc impose ratio=adaptive, toute autre valeur serait ignorée.
+      ratio: "adaptive",
+      duration: num(opts.duration, 5),
+      generate_audio: String(opts.generate_audio ?? "true") === "true",
+      camera_fixed: String(opts.camera_fixed ?? "false") === "true",
+      watermark: false,
+    }),
+  },
+  {
+    id: "bp25ref",
+    provider: "byteplus",
+    rateDependsOnOptions: true,
+    needsReferences: true,
+    endpoint: "dreamina-seedance-2-5-260628",
+    name: "Seedance 2.5 référence (BytePlus direct)",
+    tagline: "RÉFÉRENCE→VIDÉO, moitié prix de fal — personnage cohérent",
+    priceSummary: "≈ 0,103 $/s en 480p · 0,231 $/s en 720p",
+    options: [
+      durationOption([4, 5, 10], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p" },
+        ],
+        default: "720p",
+      },
+      ratioOption(["9:16", "16:9", "21:9", "1:1", "4:3", "3:4", "adaptive"], "9:16"),
+      { key: "generate_audio", label: "🔊 Générer l'audio ?", choices: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }], default: "true" },
+    ],
+    promptGuide:
+      "Seedance 2.5 référence via BytePlus. Les images sont désignées dans le prompt par @Image1, @Image2… " +
+      "selon l'ordre d'envoi — syntaxe DIFFÉRENTE de celle de fal. Lier explicitement chaque référence " +
+      "(« @Image1 est la protagoniste »). Décrire le personnage en plus de l'action. Jusqu'à 30 images.",
+    maxPromptChars: 8000,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => bpCost(o, (res) => (res === "1080p" ? 11.7 * 0.72 : 10.7)),
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      content: [
+        { type: "text", text: prompt },
+        ...imageUrls.map((url) => ({ type: "image_url", image_url: { url }, role: "reference_image" })),
+      ],
+      resolution: String(opts.resolution ?? "720p"),
+      ratio: String(opts.aspect_ratio ?? "9:16"),
+      duration: num(opts.duration, 5),
+      generate_audio: String(opts.generate_audio ?? "true") === "true",
+      omni_reference_task_type: "reference",
+      watermark: false,
+    }),
+  },
+  {
+    id: "bp20fast",
+    provider: "byteplus",
+    rateDependsOnOptions: true,
+    endpoint: "dreamina-seedance-2-0-fast-260128",
+    name: "Seedance 2.0 fast (BytePlus)",
+    tagline: "Bon compromis — environ 0,09 $/s en 720p (promo −25 % jusqu'au 07/10)",
+    priceSummary: "≈ 0,04 $/s en 480p · 0,09 $/s en 720p",
+    options: [
+      durationOption([5, 10], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p" },
+        ],
+        default: "720p",
+      },
+      { key: "generate_audio", label: "🔊 Générer l'audio ?", choices: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }], default: "true" },
+    ],
+    promptGuide:
+      "Seedance 2.0 fast. ⚠️ La 2.0 NE COMPREND PAS les horodatages (« 0-3s : … ») — seulement les numéros " +
+      "de plan (« Shot 1 »). Sinon, mêmes règles de rédaction que la 2.5.",
+    maxPromptChars: 8000,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => bpCost(o, () => 4.17),
+    buildInput: ({ imageUrl, prompt, opts }) => ({
+      content: [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: imageUrl }, role: "first_frame" },
+      ],
+      resolution: String(opts.resolution ?? "720p"),
+      ratio: "adaptive",
+      duration: num(opts.duration, 5),
+      generate_audio: String(opts.generate_audio ?? "true") === "true",
+      watermark: false,
+    }),
+  },
+  {
+    id: "bp20mini",
+    provider: "byteplus",
+    rateDependsOnOptions: true,
+    endpoint: "dreamina-seedance-2-0-mini-260615",
+    name: "Seedance 2.0 mini (BytePlus)",
+    tagline: "LE MOINS CHER DU CATALOGUE — ~0,03 $/s en 720p (promo −60 % jusqu'au 07/10)",
+    priceSummary: "≈ 0,013 $/s en 480p · 0,03 $/s en 720p — 5 s = 0,15 $",
+    options: [
+      durationOption([5, 10], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p" },
+        ],
+        default: "720p",
+      },
+      { key: "generate_audio", label: "🔊 Générer l'audio ?", choices: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }], default: "true" },
+    ],
+    promptGuide:
+      "Seedance 2.0 mini. Le moins cher de tout le catalogue : à privilégier pour ITÉRER sur un prompt avant " +
+      "de refaire la prise sur un modèle haut de gamme. ⚠️ Pas d'horodatages, uniquement « Shot 1 », « Shot 2 ».",
+    maxPromptChars: 8000,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => bpCost(o, () => 1.39),
+    buildInput: ({ imageUrl, prompt, opts }) => ({
+      content: [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: imageUrl }, role: "first_frame" },
+      ],
+      resolution: String(opts.resolution ?? "720p"),
+      ratio: "adaptive",
+      duration: num(opts.duration, 5),
+      generate_audio: String(opts.generate_audio ?? "true") === "true",
+      watermark: false,
     }),
   },
 ];

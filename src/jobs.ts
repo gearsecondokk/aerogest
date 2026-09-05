@@ -1,7 +1,7 @@
 import { InlineKeyboard, InputFile, type Bot } from "grammy";
 import { pushEvent } from "./bot.js";
 import { config } from "./config.js";
-import { describeFalError, getResult, getStatus } from "./fal.js";
+import { describeError, getResult, getStatus } from "./provider.js";
 import { getModel } from "./models.js";
 import { formatUsd } from "./pricing.js";
 import type { Job, Store } from "./store.js";
@@ -33,12 +33,12 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
   async function pollJob(job: Job): Promise<void> {
     let status;
     try {
-      status = await getStatus(job.endpoint, job.requestId);
+      status = await getStatus(job.provider ?? "fal", job.endpoint, job.requestId);
     } catch (err) {
-      // 404/410 etc. : le job n'existe plus côté fal
-      const msg = describeFalError(err);
+      // 404/410 etc. : la tâche n'existe plus côté fournisseur
+      const msg = describeError(job.provider ?? "fal", err);
       if (/\b(404|410)\b/.test(msg)) {
-        await failJob(job, `Requête introuvable côté fal.ai (${msg})`);
+        await failJob(job, `Requête introuvable côté fournisseur (${msg})`);
       } else {
         console.warn(`Statut indisponible pour le job ${job.id} : ${msg}`);
       }
@@ -66,14 +66,15 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
 
     // COMPLETED : on récupère le résultat (peut aussi contenir une erreur)
     try {
-      const result = await getResult(job.endpoint, job.requestId);
+      const result = await getResult(job.provider ?? "fal", job.endpoint, job.requestId);
       job.status = "done";
       job.videoUrl = result.videoUrl;
+      job.expandedPrompt = result.expandedPrompt ?? null;
       job.finishedAt = Date.now();
       store.saveJob(job);
       await deliverVideo(job);
     } catch (err) {
-      await failJob(job, describeFalError(err));
+      await failJob(job, describeError(job.provider ?? "fal", err));
     }
   }
 
@@ -127,7 +128,14 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
         /* ignore */
       }
     }
-    pushEvent(store, job.chatId, `La vidéo du job ${job.id} (${model?.name ?? job.modelId}) est prête et vient d'être envoyée à l'utilisateur. URL : ${videoUrl}`);
+    pushEvent(
+      store,
+      job.chatId,
+      `La vidéo du job ${job.id} (${model?.name ?? job.modelId}) est prête et vient d'être envoyée à l'utilisateur. URL : ${videoUrl}` +
+        (job.expandedPrompt
+          ? `\nLe modèle a RÉÉCRIT le prompt avant génération. Texte réellement utilisé : « ${job.expandedPrompt.slice(0, 600)} ». Si le rendu s'éloigne du réalisme demandé, c'est probablement là que ça s'est joué — signale-le et propose de relancer avec la réécriture désactivée.`
+          : ""),
+    );
   }
 
   async function failJob(job: Job, reason: string): Promise<void> {

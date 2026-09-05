@@ -2,7 +2,8 @@ import { Bot, InlineKeyboard, type Context } from "grammy";
 import { randomUUID } from "node:crypto";
 import { describeClaudeError, runAgentTurn, type AgentHooks } from "./agent.js";
 import { config } from "./config.js";
-import { cancelRequest, describeFalError, submitVideo, uploadImage } from "./fal.js";
+import { cancelRequest, describeFalError, uploadImage } from "./fal.js";
+import { submitVideo } from "./provider.js";
 import { MODELS, describeOptions, getModel } from "./models.js";
 import { formatUsd } from "./pricing.js";
 import type { HistoryMessage, Job, PendingGeneration, Session, Store } from "./store.js";
@@ -26,6 +27,17 @@ export function createBot(store: Store): Bot {
   // ---- Contrôle d'accès ----------------------------------------------------
   bot.use(async (ctx, next) => {
     const uid = ctx.from?.id;
+
+    // Verrou par CHAT : le bot ne répond que dans les chats listés. On sort en
+    // silence ailleurs — pas de message d'erreur, qui ne ferait que signaler
+    // son existence à qui l'aurait ajouté sans autorisation. Le /id reste
+    // joignable en privé pour pouvoir récupérer un identifiant.
+    const chatId = ctx.chat?.id;
+    if (config.allowedChatIds.size > 0 && chatId !== undefined && !config.allowedChatIds.has(chatId)) {
+      if (ctx.hasCommand("id") && ctx.chat?.type === "private") return next();
+      return;
+    }
+
     if (ctx.hasCommand("id")) return next();
     if (config.allowedUserIds.size > 0 && (!uid || !config.allowedUserIds.has(uid))) {
       if (ctx.message) {
@@ -135,6 +147,10 @@ export function createBot(store: Store): Bot {
 
     const session = store.getSession(ctx.chat.id);
     session.imageUrl = imageUrl;
+    // On EMPILE au lieu d'écraser : le mode référence→vidéo a besoin de
+    // plusieurs vues du même personnage. Plafonné pour ne pas gonfler
+    // l'état indéfiniment ; /new repart de zéro.
+    session.imageUrls = [...(session.imageUrls ?? []), imageUrl].slice(-8);
     session.imageFileId = img.fileId;
     session.pending = undefined;
     const caption = ctx.message.caption?.trim();
@@ -270,6 +286,7 @@ export function createBot(store: Store): Bot {
     const model = getModel(pending.modelId)!;
     const input = model.buildInput({
       imageUrl: session.imageUrl!,
+      imageUrls: session.imageUrls ?? [session.imageUrl!],
       prompt: pending.prompt,
       negativePrompt: pending.negativePrompt,
       opts: pending.options,
@@ -277,7 +294,7 @@ export function createBot(store: Store): Bot {
 
     let requestId: string;
     try {
-      requestId = await submitVideo(model.endpoint, input);
+      requestId = await submitVideo(model.provider ?? "fal", model.endpoint, input);
     } catch (err) {
       console.error("Erreur submit fal :", err);
       const reason = describeFalError(err);

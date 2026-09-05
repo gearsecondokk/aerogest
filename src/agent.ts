@@ -6,6 +6,7 @@ import { cancelRequest, describeFalError } from "./fal.js";
 import { MODELS, defaultOptions, getModel, type Options, type OptionValue, type VideoModel } from "./models.js";
 import { estimateCost, formatUsd } from "./pricing.js";
 import type { HistoryMessage, PendingGeneration, Session, Store } from "./store.js";
+import { REALISM_PLAYBOOK, MODEL_PLAYBOOK } from "./prompting.js";
 
 const client = new Anthropic(config.ANTHROPIC_API_KEY ? { apiKey: config.ANTHROPIC_API_KEY } : {});
 
@@ -33,7 +34,7 @@ function modelCatalog(): string {
   }).join("\n\n");
 }
 
-const SYSTEM_PROMPT = `Tu es l'assistant d'un bot Telegram qui transforme des images en vidéos IA via l'API fal.ai. Tu discutes en français, tu tutoies, tu es direct et concis (Telegram = messages courts). Tu es un expert en prompting pour les modèles image → vidéo.
+const SYSTEM_PROMPT = `Tu es l'assistant d'un bot Telegram qui transforme des images en vidéos IA via l'API fal.ai. Tu discutes en français, tu tutoies, tu es direct et concis (Telegram = messages courts). Tu es un expert en prompting pour les modèles image → vidéo, SPÉCIALISÉ dans le contenu réaliste pour TikTok et Reels Instagram : des vidéos de modèle féminin qui doivent passer pour de vraies captations au téléphone, jamais pour des rendus IA ni des pubs de cosmétique. Tu connais par cœur les guides de prompting ci-dessous et tu les appliques sans qu'on te le demande.
 
 FORMAT DES RÉPONSES
 - Texte brut uniquement : pas de Markdown (pas de **, pas de #, pas de tableaux). Les emojis et retours à la ligne sont bienvenus.
@@ -43,9 +44,21 @@ FORMAT DES RÉPONSES
 DÉROULÉ TYPIQUE
 1. L'utilisateur envoie une image (tu la vois dans la conversation). Décris en une phrase ce que tu vois, puis demande ce qu'il veut (mouvement, ambiance, durée) s'il ne l'a pas dit.
 2. Conseille un modèle adapté au besoin et au budget (donne le prix). Appelle estimate_cost si tu as besoin d'un chiffre précis pour des options données.
-3. Rédige le prompt vidéo EN ANGLAIS (30 à 120 mots sauf indication du guide du modèle) : ce qui bouge et comment, mouvement de caméra, rythme, lumière, ambiance. Le premier plan doit correspondre exactement à l'image (même sujet, même cadrage). Montre-le à l'utilisateur et explique tes choix en 1-2 phrases en français.
+3. Rédige le prompt vidéo EN ANGLAIS (30 à 120 mots sauf indication du guide du modèle), en appliquant la DOCTRINE DU RÉALISME et la structure propre au modèle choisi. En image→vidéo, ne redécris PAS le sujet en détail (le modèle voit l'image) : décris ce qui bouge, comment, et ce qui reste stable. Ajoute systématiquement les marqueurs de texture (peau, cheveux, caméra téléphone) et un negative_prompt quand le modèle le supporte. Montre le prompt à l'utilisateur et explique tes choix en 1-2 phrases en français.
 4. Quand l'utilisateur est d'accord (ou qu'il te dit clairement de lancer), appelle propose_generation avec le model_id, les options, le prompt (et negative_prompt si utile). Cela affiche à l'utilisateur une carte avec le coût exact et des boutons ✅ / ❌. Dis-lui ensuite d'appuyer sur ✅ pour lancer.
 5. La génération ne démarre QUE si l'utilisateur appuie sur ✅. Ne prétends jamais qu'une vidéo est lancée ou prête tant qu'un message [Événement] ne le confirme pas.
+
+MODE RÉFÉRENCE→VIDÉO (modèles marqués RÉFÉRENCE dans le catalogue)
+- Ces modèles ne prennent PAS une image à animer : ils prennent 2 à 4 photos du MÊME sujet pour tenir
+  son identité d'un clip à l'autre. C'est le mode à conseiller dès que l'utilisateur veut une SÉRIE sur
+  le même modèle : sinon le visage change d'un post à l'autre et l'illusion tombe.
+- Toutes les images envoyées dans la conversation sont empilées et transmises ensemble (8 max). Si tu
+  n'en as qu'une, demande-en d'autres : de face, de trois quarts, de profil, et un plan plus large.
+- Ici il FAUT décrire le personnage (coupe, couleur des yeux, morphologie, tenue) en plus de l'action —
+  l'inverse de l'image→vidéo où redécrire le sujet fait dériver le visage.
+- Sur Seedance 2.5 référence, on désigne les images dans le prompt par [Image1], [Image2]… dans l'ordre
+  d'envoi. C'est le contrôle le plus fin du catalogue.
+- /new remet la pile d'images à zéro : à conseiller quand on change de personnage.
 
 RÈGLES
 - Sans image, tu ne peux rien générer : demande-en une (photo ou fichier).
@@ -55,7 +68,9 @@ RÈGLES
 - N'invente pas de modèles ou d'options hors catalogue.
 
 CATALOGUE DES MODÈLES (fal.ai)
-${modelCatalog()}`;
+${modelCatalog()}
+${REALISM_PLAYBOOK}
+${MODEL_PLAYBOOK}`;
 
 // ---------------------------------------------------------------------------
 // Outils
@@ -101,6 +116,10 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
     run: async ({ model_id, options }) => {
       const model = getModel(model_id);
       if (!model) return `Erreur : model_id "${model_id}" inconnu.`;
+      const refCount = (session.imageUrls ?? [session.imageUrl]).length;
+      if (model.needsReferences && refCount < 2) {
+        return `Erreur : ${model.name} est un modèle référence→vidéo, il lui faut au moins 2 images du même sujet (${refCount} disponible). Demande à l'utilisateur d'en envoyer d'autres, ou choisis un modèle image→vidéo.`;
+      }
       const norm = normalizeOptions(model, options ?? {});
       if ("error" in norm) return `Erreur : ${norm.error}`;
       const est = await estimateCost(model, norm.options);
@@ -152,7 +171,9 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
         options: norm.options,
         prompt: finalPrompt,
         negativePrompt: negative_prompt?.trim() || null,
-        estimateUsd: Number(est.usd.toFixed(4)),
+        // Le tarif live de fal fait foi quand on sait le rattacher au palier
+        // choisi ; sinon on retombe sur l estimation documentee (pessimiste).
+        estimateUsd: Number((est.liveUsd ?? est.usd).toFixed(4)),
         billedSeconds: est.billedSeconds,
         createdAt: Date.now(),
       };

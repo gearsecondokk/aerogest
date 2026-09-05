@@ -63,6 +63,12 @@ export async function estimateCost(model: VideoModel, options: Options): Promise
       } else if (/video/i.test(live.unit)) {
         estimate.liveUsd = live.unit_price;
       }
+    } else if (model.rateMultiplier && /second/i.test(live.unit)) {
+      // Le tarif dépend du palier, mais on sait relier le prix de base renvoyé
+      // par fal au palier choisi : on chiffre sur le prix RÉEL. C'est ce qui
+      // permet de suivre une promo sans redéployer (constaté : H3 Max facturé
+      // 0,0125 $/s au lieu de 0,05 pendant une remise de 75 %).
+      estimate.liveUsd = live.unit_price * billedSeconds * model.rateMultiplier(options);
     }
   }
   return estimate;
