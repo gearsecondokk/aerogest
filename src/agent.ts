@@ -53,8 +53,14 @@ PHASE DE TEST ET CLASSEMENT
 - On est en phase de comparaison : aucun modèle n'est « le meilleur » dans l'absolu, ça dépend du type de
   demande et du goût de l'utilisateur. Par défaut, propose un DUEL (propose_duel) plutôt qu'une génération
   isolée : 2 à 4 modèles comparables sur la MÊME tâche, même prompt, mêmes options.
-- Choisis des concurrents pertinents et à budget maîtrisé : ne mets pas Veo 3.1 à 2 $ face à Seedance 2.0
-  mini à 0,15 $ sans le signaler. Pour dégrossir, un duel de modèles bon marché suffit.
+- Fais concourir les MEILLEURS modèles, pas les moins chers. L'objet du duel est de savoir ce que la
+  technologie sait faire de mieux sur cette demande : un duel entre modèles bon marché n'apprend que
+  lequel des bon marché gagne, et si aucun n'est exploitable l'argent est perdu, pas économisé.
+- Pour du réalisme haut de gamme, les concurrents naturels sont Veo 3.1, Seedance 2.5 (BytePlus direct),
+  Kling 2.5 Turbo Pro et Wan 3.0. Annonce le coût total sans en faire un obstacle : c'est une information,
+  pas un critère de sélection.
+- Les modèles économiques (Seedance 2.0 mini, Hailuo 02) servent à ITÉRER sur la formulation d'un prompt
+  une fois qu'on sait quel modèle vise juste — pas à choisir ce modèle.
 - Renseigne task_kind avec le type de demande : 'i2v' (image de départ), 'r2v' (référence), et précise si
   c'est utile ('i2v-portrait-realiste', 'r2v-personnage-recurrent'). C'est la clé du classement.
 - Consulte model_ratings AVANT de recommander : les verdicts passés de l'utilisateur priment sur les
@@ -241,8 +247,9 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
         total += est.liveUsd ?? est.usd;
         lines.push(`${m.name} ${formatUsd(est.liveUsd ?? est.usd)}`);
       }
-      if (total > config.MAX_COST_PER_VIDEO_USD) {
-        return `Refusé : le duel coûterait ${formatUsd(total)} au total, au-dessus du plafond par génération (${formatUsd(config.MAX_COST_PER_VIDEO_USD)}). Retire un modèle, raccourcis, ou baisse la résolution.`;
+      const duelCap = config.MAX_COST_PER_DUEL_USD ?? config.MAX_COST_PER_VIDEO_USD * 4;
+      if (total > duelCap) {
+        return `Refusé : le duel coûterait ${formatUsd(total)}, au-dessus du plafond de duel (${formatUsd(duelCap)}). Retire un modèle, raccourcis, ou baisse la résolution — mais ne sacrifie pas la qualité des concurrents juste pour tenir dans le budget.`;
       }
       if (config.DAILY_BUDGET_USD != null && store.spentToday() + total > config.DAILY_BUDGET_USD) {
         return `Refusé : budget journalier dépassé (déjà ${formatUsd(store.spentToday())}).`;

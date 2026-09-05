@@ -14,6 +14,10 @@ const schema = z.object({
   // Chats où le bot a le droit de répondre. Vide = partout.
   ALLOWED_CHAT_IDS: z.string().default(""),
   MAX_COST_PER_VIDEO_USD: z.coerce.number().positive().default(5),
+  /** Plafond du TOTAL d'un duel. Appliquer la limite par vidéo à la somme
+   *  interdirait de comparer les modèles haut de gamme, ce qui est
+   *  précisément l'objet d'un duel. Défaut : 4× le plafond unitaire. */
+  MAX_COST_PER_DUEL_USD: z.coerce.number().positive().optional(),
   DAILY_BUDGET_USD: z.coerce.number().positive().optional(),
   DATA_DIR: z.string().default("./data"),
   POLL_INTERVAL_MS: z.coerce.number().int().min(2000).default(5000),
