@@ -37,7 +37,14 @@ const DEFECTS: Array<[string, RegExp]> = [
 
 const SUGGEST_VIDEO =
   "Filmed by a friend on a phone, handheld and a bit unsteady, framing slightly off-center, autofocus hunting for a moment, " +
-  "brief motion blur when she moves, highlights blown out by the window, mild sensor noise, no color grading, natural skin with visible pores.";
+  "brief motion blur when she moves, highlights blown out by the window, mild sensor noise, no color grading, natural skin with visible pores. " +
+  "No background music — only ambient sound (street, wind, room tone) and her voice.";
+
+/** Règle de l'utilisateur (2026-09-05) : JAMAIS de musique de fond. Les modèles à
+ *  audio natif (Seedance, Wan 3.0, Kling, Veo, H3) en ajoutent volontiers si on ne
+ *  l'interdit pas noir sur blanc. */
+const MUSIC_FORBID = /\b(no|without|zero|never any)\s+(background\s+|added\s+)?(music|bgm|soundtrack|score)\b/i;
+const MUSIC_ASK = /\b(background music|bgm|soundtrack|musical score|upbeat music|music (playing|plays|swells|starts)|lo-?fi beats?|beat drops?)\b/i;
 const SUGGEST_IMAGE =
   "Candid unretouched phone snapshot, framing slightly off-center, uneven available light with a blown-out window, mild noise, " +
   "visible pores and a few stray hairs.";
@@ -66,6 +73,11 @@ export function realismIssues(prompt: string, kind: MediaKind = "video"): string
   if (banned.length) problems.push(`vocabulaire cinéma/pub interdit : ${[...new Set(banned.map((b) => b.toLowerCase()))].join(", ")}`);
   if (!CAMERA.test(prompt)) problems.push("aucune mention d'un téléphone tenu à la main (phone / handheld / filmed by a friend)");
   if (!SKIN.test(prompt)) problems.push("aucune mention de peau réelle (visible pores / uneven skin / unretouched)");
+  if (kind === "video") {
+    const asked = bannedHits(prompt, MUSIC_ASK);
+    if (asked.length) problems.push(`musique de fond demandée (${asked.join(", ")}) : INTERDIT, l'utilisateur ne veut jamais de musique`);
+    if (!MUSIC_FORBID.test(prompt)) problems.push("aucune interdiction explicite de musique de fond — écrire « No background music; only ambient sound and her voice » (sur Seedance : « No BGM; generate only environmental sounds »)");
+  }
   const found = DEFECTS.filter(([, re]) => re.test(prompt)).map(([name]) => name);
   const need = kind === "video" ? 2 : 1;
   if (found.length < need) {

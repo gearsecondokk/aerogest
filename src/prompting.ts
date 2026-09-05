@@ -40,6 +40,17 @@ AMATEUR OBLIGATOIRE — VÉRIFIÉ PAR LE CODE À CHAQUE PROPOSITION
   pores. » Les gestes aussi doivent être imparfaits : un pas raté, le sac qui
   glisse, un regard hors champ, un rire mal cadré.
 
+AUDIO — JAMAIS DE MUSIQUE DE FOND (règle de l'utilisateur, vérifiée par le code)
+  Les modèles à audio natif (Seedance, Wan 3.0, Kling avec generate_audio,
+  Veo, H3) ajoutent une musique si on ne l'interdit pas. Chaque prompt vidéo
+  finit donc par une interdiction explicite : « No background music — only
+  ambient sound (street, wind, room tone) and her voice. » Sur Seedance, la
+  formulation officielle : « No BGM; generate only environmental sounds. »
+  Dans le negative prompt : « background music, soundtrack, music ». Un
+  prompt qui demande une musique, ou qui oublie de l'interdire, est refusé.
+  La musique ou la voix off, c'est au montage, avec un son TikTok — jamais
+  générée.
+
 PEAU ET VISAGE (le plus important, c'est là que l'œil détecte le faux)
   visible skin pores, fine lines, uneven skin tone, subtle blemishes,
   natural oil sheen on forehead and nose, slight under-eye shadow,
@@ -114,7 +125,7 @@ Base réutilisable (Wan, Kling, Hailuo, Seedance) :
   "plastic skin, smooth airbrushed skin, beauty filter, face morphing,
    distorted hands, extra fingers, warped background, flickering, jitter,
    oversaturated colors, studio lighting, cinematic, color graded, film look,
-   perfect symmetry, watermark, text"
+   perfect symmetry, background music, soundtrack, music, watermark, text"
   (pas de « motion blur » dans le négatif : un peu de flou de mouvement fait
   précisément partie du réalisme recherché)
 ⚠️ Grok Imagine IGNORE les negative prompts : tout doit y être formulé en
