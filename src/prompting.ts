@@ -274,3 +274,51 @@ jeu d'images de référence (face, 3/4, profil, plan large) et les réutiliser,
 plutôt que de regénérer un visage à chaque fois — sinon le personnage change
 d'un post à l'autre et l'illusion tombe.
 `;
+
+/**
+ * Images fixes pour Instagram (posts, carrousels, stories). Même doctrine de
+ * réalisme que la vidéo ; ce qui change, c'est le format, la cohérence du
+ * personnage d'un post à l'autre, et la syntaxe propre à chaque modèle.
+ */
+export const IMAGE_PLAYBOOK = `
+IMAGES POUR INSTAGRAM — DOCTRINE
+- Format : le feed se publie en 4:5 (1080×1350), c'est le défaut. 1:1 acceptable, 9:16 pour les stories
+  et les couvertures de Reels. Quand un modèle n'a pas de 4:5 (Seedream, Grok), prendre 3:4 : Instagram
+  recadre à peine. Générer en 2K pour publier (Instagram recompresse, il faut de la marge), en 1K pour
+  dégrossir un duel — c'est 2 à 4 fois moins cher.
+- Réalisme photo, mêmes règles qu'en vidéo : rendu téléphone (iPhone, 26 mm, f/1.8), lumière existante
+  et imparfaite, peau avec pores, brillances et petites irrégularités, cheveux avec des mèches folles,
+  décor vivant et un peu encombré, pose prise sur le vif, grain léger, jamais de mot du registre
+  publicitaire (cinematic, 8K, flawless, perfect, studio lighting, beauty retouch). Écrire « unretouched
+  phone photo » vaut mieux que « photorealistic ».
+- COHÉRENCE DU PERSONNAGE : pour refaire le MÊME mannequin dans un nouveau post, on ne part jamais du
+  texte seul — on passe par un modèle d'ÉDITION avec 2 à 4 références de la même personne (un gros plan
+  du visage + un plein pied). Dans le prompt, on ne redécrit PAS le visage (ça le fait dériver) : on
+  ancre « the same woman as in the reference images, identical face, hair and skin tone », puis on décrit
+  ce qui CHANGE — tenue, lieu, lumière, pose, cadrage.
+- Créer un NOUVEAU personnage se fait en texte→image : fixer son identité une fois avec des ancres
+  distinctives (taches de rousseur, frange, couleur des yeux, morphologie), générer plusieurs variantes,
+  garder la meilleure comme référence pour tout ce qui suit.
+- Carrousel : mêmes références, même lumière, même tenue ; on ne fait varier que la pose et l'angle.
+- Les duels d'images coûtent des centimes : ici on peut comparer 4 modèles d'un coup sans hésiter, et
+  c'est le bon moment pour trancher entre les familles avant de produire en volume.
+
+SYNTAXE PAR MODÈLE (IMAGE)
+- Nano Banana Pro / Nano Banana 2 (Google, fal) : phrases complètes, ton conversationnel, dire
+  explicitement ce qui doit rester identique (« keep her face exactly as in the references »). Le plus
+  fiable du catalogue pour tenir un visage en édition. Le 4:5 est natif.
+- GPT Image 2 (OpenAI, fal) : langage naturel détaillé, suit très bien les consignes et le texte dans
+  l'image. Qualité « high » pour publier, « medium » pour dégrossir (4 fois moins cher).
+- Seedream 4.5 (fal) et Seedream 5.0 Pro (TopView) : description naturelle + termes photo (focale,
+  lumière). En édition, désigner les références par « the woman in image 1 ». Pas de 4:5 → 3:4. Rendu
+  peau très crédible. Attention : la version fal de Seedream applique le même filtre « personne réelle »
+  que la vidéo en édition ; si elle refuse une référence, la route TopView la prend.
+- FLUX 2 Max (Black Forest Labs, fal) : prompt descriptif structuré — sujet, décor, lumière, appareil,
+  ambiance — le plus photographique sur la peau et les textures. Facturé au mégapixel : le 2K coûte 3 fois
+  le 1K.
+- Grok Imagine Image (xAI, fal) : prompts courts, rendu candide très naturel, le moins cher du catalogue —
+  parfait pour le volume et les brouillons. Pas de 4:5 → 3:4. Édition limitée à 3 références.
+- Midjourney v8.1 (TopView) : la référence esthétique, mais il embellit — le brider avec « candid
+  unretouched phone photo, natural skin texture ». Édition limitée à 4 références. Les paramètres
+  --style ou --ar dans le prompt ne sont pas garantis via TopView : le format se règle par l'option.
+`;

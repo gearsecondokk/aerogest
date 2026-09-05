@@ -76,6 +76,15 @@ export interface VideoModel {
    *  propose que de changer d'image. Ces modèles restent donc bons pour le
    *  texte seul et pour les plans sans personne. */
   refusesHumanInputImages?: boolean;
+  /** Nature du média produit. Par défaut vidéo ; 'image' pour les posts Instagram. */
+  kind?: "image" | "video";
+  /** Nombre minimal d'images en entrée. Par défaut : 1 pour la vidéo (image de
+   *  départ), 2 si needsReferences, 0 pour une image générée depuis le texte. */
+  minImages?: number;
+  /** Nombre d'images facturées pour ces options (tarif fal à l'unité « images »). */
+  billedImages?: (opts: Options) => number;
+  /** Mégapixels facturés pour ces options (tarif fal au « megapixel », FLUX 2). */
+  billedMegapixels?: (opts: Options) => number;
   buildInput: (args: {
     imageUrl: string;
     imageUrls: string[];
@@ -124,6 +133,66 @@ const tvCost = (model: string, o: Options, def = 5): number => {
   const res = String(o.resolution ?? "720p");
   const perSec = TV_CREDITS_PER_SEC[model]?.[res] ?? TV_CREDITS_PER_SEC[model]?.["720p"] ?? 1.5;
   return num(o.duration, def) * perSec * config.TOPVIEW_USD_PER_CREDIT;
+};
+
+// ── Images : formats Instagram et helpers de taille ─────────────────────────
+
+/** Ratios proposés pour un post. Le 4:5 est le format du feed ; les modèles qui
+ *  ne l'ont pas prennent 3:4 (Instagram recadre à peine). */
+const RATIOS_INSTA = ["4:5", "1:1", "9:16", "3:4", "2:3", "16:9"];
+const imageRatioOption = (values: string[], def: string): ModelOption => ({
+  key: "aspect_ratio",
+  label: "📐 Format ?",
+  choices: values.map((v) => ({
+    value: v,
+    label: v === "4:5" ? "4:5 (feed Instagram)" : v === "9:16" ? "9:16 (story)" : v === "3:4" ? "3:4 (≈ feed)" : v === "auto" ? "auto (comme la référence)" : v,
+  })),
+  default: def,
+});
+const imageResolutionOption = (values: string[], def: string): ModelOption => ({
+  key: "resolution",
+  label: "🖥 Résolution ?",
+  choices: values.map((v) => ({ value: v, label: v === "2K" || v === "2k" ? `${v} (pour publier)` : v === "1K" || v === "1k" ? `${v} (brouillon)` : v })),
+  default: def,
+});
+
+/** Dimensions en pixels pour un ratio et un palier. Base 1K ≈ 1080 de large en
+ *  portrait, 2K = le double. Arrondies au multiple de 16 (exigé par FLUX et GPT). */
+const RATIO_WH: Record<string, [number, number]> = { "4:5": [4, 5], "1:1": [1, 1], "9:16": [9, 16], "3:4": [3, 4], "2:3": [2, 3], "16:9": [16, 9] };
+const sizeFor = (ratio: string, res: string): { width: number; height: number } => {
+  const [rw, rh] = RATIO_WH[ratio] ?? RATIO_WH["4:5"];
+  const shortSide = /2k/i.test(res) ? 2048 : 1088;
+  const r16 = (v: number) => Math.round(v / 16) * 16;
+  return rw <= rh
+    ? { width: shortSide, height: r16((shortSide * rh) / rw) }
+    : { width: r16((shortSide * rw) / rh), height: shortSide };
+};
+/** Seedream 4.5 exige des côtés entre 1920 et 4096 : on part de 2048 sur le petit côté. */
+const seedreamSize = (ratio: string): { width: number; height: number } => {
+  const [rw, rh] = RATIO_WH[ratio] ?? RATIO_WH["4:5"];
+  const r8 = (v: number) => Math.round(v / 8) * 8;
+  return rw <= rh ? { width: 2048, height: Math.min(4096, r8((2048 * rh) / rw)) } : { width: Math.min(4096, r8((2048 * rw) / rh)), height: 2048 };
+};
+const megapixels = (o: Options): number => {
+  const { width, height } = sizeFor(String(o.aspect_ratio ?? "4:5"), String(o.resolution ?? "1K"));
+  return (width * height) / 1_000_000;
+};
+/** GPT Image 2 facture au token ; barème relevé sur fal le 2026-09-05 (≈ 0,13 $ + 0,033 $/MP en high). */
+const gptCost = (o: Options): number => {
+  const mp = megapixels(o);
+  const q = String(o.quality ?? "high");
+  return q === "low" ? 0.005 + 0.001 * mp : q === "medium" ? 0.035 + 0.008 * mp : 0.13 + 0.033 * mp;
+};
+/** Crédits TopView par image (grille du 2026-09-05), convertis en USD. */
+const TV_IMAGE_CREDITS: Record<string, Record<string, number>> = {
+  "Seedream 5.0 Pro": { "1K": 0.4, "2K": 0.8 },
+  "Seedream 4.5": { "2K": 0.2, "4K": 0.2 },
+  "Midjourney v8.1": { default: 0.5 },
+};
+const tvImageCost = (model: string, o: Options): number => {
+  const t = TV_IMAGE_CREDITS[model] ?? {};
+  const credits = t[String(o.resolution ?? "2K")] ?? t.default ?? 0.5;
+  return credits * config.TOPVIEW_USD_PER_CREDIT;
 };
 
 
@@ -826,6 +895,406 @@ export const MODELS: VideoModel[] = [
       sound: String(opts.sound ?? "off"),
     }),
   },
+
+  // ═══════════════ IMAGES — posts Instagram ═══════════════
+  {
+    id: "nbp",
+    kind: "image",
+    minImages: 0,
+    rateDependsOnOptions: true,
+    endpoint: "fal-ai/nano-banana-pro",
+    name: "Nano Banana Pro (image)",
+    tagline: "Google Gemini 3 Pro Image — texte→image, 4:5 natif, le plus fiable du catalogue",
+    priceSummary: "0,15 $ l'image en 1K/2K · 0,30 $ en 4K",
+    options: [imageRatioOption(RATIOS_INSTA, "4:5"), imageResolutionOption(["1K", "2K", "4K"], "2K")],
+    promptGuide:
+      "Phrases complètes, ton conversationnel, décrire la scène comme à un photographe. Préciser « unretouched " +
+      "phone photo, natural skin texture ». Pour un NOUVEAU personnage : ancres distinctives (taches de rousseur, " +
+      "frange, yeux) ; garder la meilleure sortie comme référence pour la suite.",
+    maxPromptChars: 4000,
+    billedSeconds: () => 0,
+    estimateUsd: (o) => (String(o.resolution) === "4K" ? 0.3 : 0.15),
+    rateMultiplier: (o) => (String(o.resolution) === "4K" ? 2 : 1),
+    buildInput: ({ prompt, opts }) => ({
+      prompt,
+      aspect_ratio: String(opts.aspect_ratio ?? "4:5"),
+      resolution: String(opts.resolution ?? "2K"),
+      output_format: "jpeg",
+      num_images: 1,
+    }),
+  },
+  {
+    id: "nbpe",
+    kind: "image",
+    minImages: 1,
+    rateDependsOnOptions: true,
+    endpoint: "fal-ai/nano-banana-pro/edit",
+    name: "Nano Banana Pro édition (image)",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES — refaire le même mannequin dans un nouveau post, jusqu'à 10 images",
+    priceSummary: "0,15 $ l'image en 1K/2K · 0,30 $ en 4K",
+    options: [imageRatioOption(["4:5", "auto", "1:1", "9:16", "3:4", "2:3", "16:9"], "4:5"), imageResolutionOption(["1K", "2K", "4K"], "2K")],
+    promptGuide:
+      "Dire explicitement ce qui reste identique (« keep her face, hair and skin tone exactly as in the reference " +
+      "images ») et décrire ce qui CHANGE : tenue, lieu, lumière, pose, cadrage. Ne PAS redécrire le visage. " +
+      "Envoyer 2 à 4 références de la même personne : un gros plan + un plein pied.",
+    maxPromptChars: 4000,
+    billedSeconds: () => 0,
+    estimateUsd: (o) => (String(o.resolution) === "4K" ? 0.3 : 0.15),
+    rateMultiplier: (o) => (String(o.resolution) === "4K" ? 2 : 1),
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      prompt,
+      image_urls: imageUrls.slice(0, 10),
+      aspect_ratio: String(opts.aspect_ratio ?? "4:5"),
+      resolution: String(opts.resolution ?? "2K"),
+      output_format: "jpeg",
+      num_images: 1,
+    }),
+  },
+  {
+    id: "nb2",
+    kind: "image",
+    minImages: 0,
+    endpoint: "fal-ai/nano-banana-2",
+    name: "Nano Banana 2 (image)",
+    tagline: "Gemini 3.1 Flash Image — moitié prix du Pro, à comparer avec lui",
+    priceSummary: "0,08 $ l'image",
+    options: [imageRatioOption(RATIOS_INSTA, "4:5"), imageResolutionOption(["1K", "2K", "4K"], "2K")],
+    promptGuide: "Mêmes règles que Nano Banana Pro. Sert à vérifier si le Pro se voit vraiment sur cette demande.",
+    maxPromptChars: 4000,
+    billedSeconds: () => 0,
+    estimateUsd: () => 0.08,
+    buildInput: ({ prompt, opts }) => ({
+      prompt,
+      aspect_ratio: String(opts.aspect_ratio ?? "4:5"),
+      resolution: String(opts.resolution ?? "2K"),
+      output_format: "jpeg",
+      num_images: 1,
+    }),
+  },
+  {
+    id: "nb2e",
+    kind: "image",
+    minImages: 1,
+    endpoint: "fal-ai/nano-banana-2/edit",
+    name: "Nano Banana 2 édition (image)",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES, moitié prix du Pro",
+    priceSummary: "0,08 $ l'image",
+    options: [imageRatioOption(["4:5", "auto", "1:1", "9:16", "3:4", "2:3", "16:9"], "4:5"), imageResolutionOption(["1K", "2K", "4K"], "2K")],
+    promptGuide: "Mêmes règles que Nano Banana Pro édition : ancrer ce qui reste identique, décrire ce qui change.",
+    maxPromptChars: 4000,
+    billedSeconds: () => 0,
+    estimateUsd: () => 0.08,
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      prompt,
+      image_urls: imageUrls.slice(0, 10),
+      aspect_ratio: String(opts.aspect_ratio ?? "4:5"),
+      resolution: String(opts.resolution ?? "2K"),
+      output_format: "jpeg",
+      num_images: 1,
+    }),
+  },
+  {
+    id: "sd45",
+    kind: "image",
+    minImages: 0,
+    endpoint: "fal-ai/bytedance/seedream/v4.5/text-to-image",
+    name: "Seedream 4.5 (image)",
+    tagline: "ByteDance — peau très crédible, 2K natif, pas cher",
+    priceSummary: "0,04 $ l'image",
+    options: [imageRatioOption(["3:4", "1:1", "9:16", "2:3", "16:9"], "3:4")],
+    promptGuide:
+      "Description naturelle + termes photo (26 mm, f/1.8, lumière de fenêtre). Pas de 4:5 : prendre 3:4. " +
+      "Réaliste par défaut, ne pas en rajouter.",
+    maxPromptChars: 3000,
+    billedSeconds: () => 0,
+    estimateUsd: () => 0.04,
+    buildInput: ({ prompt, opts }) => ({
+      prompt,
+      image_size: seedreamSize(String(opts.aspect_ratio ?? "3:4")),
+      num_images: 1,
+    }),
+  },
+  {
+    id: "sd45e",
+    kind: "image",
+    minImages: 1,
+    endpoint: "fal-ai/bytedance/seedream/v4.5/edit",
+    name: "Seedream 4.5 édition (image, fal)",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES — ⚠️ route fal : peut refuser une référence de personne",
+    priceSummary: "0,04 $ l'image",
+    options: [imageRatioOption(["3:4", "auto", "1:1", "9:16", "2:3", "16:9"], "3:4")],
+    promptGuide:
+      "Désigner les références par « the woman in image 1 ». Si fal refuse la référence (filtre personne " +
+      "réelle), basculer sur Seedream via TopView (tvsd5e / tvsd45e).",
+    maxPromptChars: 3000,
+    billedSeconds: () => 0,
+    estimateUsd: () => 0.04,
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      prompt,
+      image_urls: imageUrls.slice(0, 10),
+      image_size: String(opts.aspect_ratio) === "auto" ? "auto_2K" : seedreamSize(String(opts.aspect_ratio ?? "3:4")),
+      num_images: 1,
+    }),
+  },
+  {
+    id: "gpt2",
+    kind: "image",
+    minImages: 0,
+    rateDependsOnOptions: true,
+    endpoint: "openai/gpt-image-2",
+    name: "GPT Image 2 (image)",
+    tagline: "OpenAI — suit les consignes au mot près, texte dans l'image impeccable",
+    priceSummary: "≈ 0,17–0,22 $ en qualité high, 0,04–0,06 $ en medium (facturé au token, estimation)",
+    options: [
+      imageRatioOption(RATIOS_INSTA, "4:5"),
+      imageResolutionOption(["1K", "2K"], "1K"),
+      { key: "quality", label: "✨ Qualité ?", choices: [{ value: "high", label: "high (pour publier)" }, { value: "medium", label: "medium (brouillon, 4× moins cher)" }], default: "high" },
+    ],
+    promptGuide:
+      "Langage naturel détaillé, une idée par phrase. Très bon pour les consignes précises et le texte. " +
+      "Qualité high pour publier ; medium suffit pour comparer des idées.",
+    maxPromptChars: 4000,
+    billedSeconds: () => 0,
+    estimateUsd: (o) => gptCost(o),
+    buildInput: ({ prompt, opts }) => ({
+      prompt,
+      image_size: sizeFor(String(opts.aspect_ratio ?? "4:5"), String(opts.resolution ?? "1K")),
+      quality: String(opts.quality ?? "high"),
+      output_format: "jpeg",
+      num_images: 1,
+    }),
+  },
+  {
+    id: "gpt2e",
+    kind: "image",
+    minImages: 1,
+    rateDependsOnOptions: true,
+    endpoint: "openai/gpt-image-2/edit",
+    name: "GPT Image 2 édition (image)",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES — jusqu'à 16 images, très obéissant",
+    priceSummary: "≈ 0,17–0,22 $ en high, 0,04–0,06 $ en medium (estimation)",
+    options: [
+      imageRatioOption(["4:5", "auto", "1:1", "9:16", "3:4", "2:3", "16:9"], "4:5"),
+      imageResolutionOption(["1K", "2K"], "1K"),
+      { key: "quality", label: "✨ Qualité ?", choices: [{ value: "high", label: "high (pour publier)" }, { value: "medium", label: "medium (brouillon)" }], default: "high" },
+    ],
+    promptGuide: "Ancrer l'identité (« the same woman as in the reference images ») et décrire ce qui change.",
+    maxPromptChars: 4000,
+    billedSeconds: () => 0,
+    estimateUsd: (o) => gptCost(o),
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      prompt,
+      image_urls: imageUrls.slice(0, 16),
+      image_size: String(opts.aspect_ratio) === "auto" ? "auto" : sizeFor(String(opts.aspect_ratio ?? "4:5"), String(opts.resolution ?? "1K")),
+      quality: String(opts.quality ?? "high"),
+      output_format: "jpeg",
+      num_images: 1,
+    }),
+  },
+  {
+    id: "flux2",
+    kind: "image",
+    minImages: 0,
+    rateDependsOnOptions: true,
+    endpoint: "fal-ai/flux-2-max",
+    name: "FLUX 2 Max (image)",
+    tagline: "Black Forest Labs — le plus photographique sur la peau et les textures",
+    priceSummary: "0,07 $ par mégapixel → ≈ 0,10 $ en 1K, 0,28 $ en 2K",
+    options: [imageRatioOption(RATIOS_INSTA, "4:5"), imageResolutionOption(["1K", "2K"], "1K")],
+    promptGuide:
+      "Prompt descriptif structuré : sujet, décor, lumière, appareil, ambiance. Termes photo bienvenus. " +
+      "Le 2K coûte 3 fois le 1K : dégrossir en 1K.",
+    maxPromptChars: 3000,
+    billedSeconds: () => 0,
+    billedMegapixels: (o) => megapixels(o),
+    rateMultiplier: () => 1,
+    estimateUsd: (o) => 0.07 * megapixels(o),
+    buildInput: ({ prompt, opts }) => ({
+      prompt,
+      image_size: sizeFor(String(opts.aspect_ratio ?? "4:5"), String(opts.resolution ?? "1K")),
+      output_format: "jpeg",
+      safety_tolerance: "3",
+    }),
+  },
+  {
+    id: "flux2e",
+    kind: "image",
+    minImages: 1,
+    rateDependsOnOptions: true,
+    endpoint: "fal-ai/flux-2-max/edit",
+    name: "FLUX 2 Max édition (image)",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES, rendu photographique",
+    priceSummary: "0,07 $ par mégapixel traité (sortie + références) → ≈ 0,15–0,45 $",
+    options: [imageRatioOption(["4:5", "auto", "1:1", "9:16", "3:4", "2:3", "16:9"], "4:5"), imageResolutionOption(["1K", "2K"], "1K")],
+    promptGuide: "Décrire la scène cible ; ancrer « the same woman as in the reference images ».",
+    maxPromptChars: 3000,
+    billedSeconds: () => 0,
+    // Les références comptent dans les mégapixels traités : ~1,5 MP chacune en pratique.
+    billedMegapixels: (o) => megapixels(o) + 3,
+    rateMultiplier: () => 1,
+    estimateUsd: (o) => 0.07 * (megapixels(o) + 3),
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      prompt,
+      image_urls: imageUrls.slice(0, 8),
+      image_size: String(opts.aspect_ratio) === "auto" ? "auto" : sizeFor(String(opts.aspect_ratio ?? "4:5"), String(opts.resolution ?? "1K")),
+      output_format: "jpeg",
+      safety_tolerance: "3",
+    }),
+  },
+  {
+    id: "grokimg",
+    kind: "image",
+    minImages: 0,
+    endpoint: "xai/grok-imagine-image",
+    name: "Grok Imagine Image (image)",
+    tagline: "xAI — candide et naturel, le moins cher : parfait pour le volume",
+    priceSummary: "0,02 $ l'image en 1k (le 2k peut coûter plus, non publié)",
+    options: [imageRatioOption(["3:4", "1:1", "9:16", "2:3", "16:9"], "3:4"), imageResolutionOption(["1k", "2k"], "2k")],
+    promptGuide: "Prompts courts et concrets. Pas de 4:5 : prendre 3:4.",
+    maxPromptChars: 2000,
+    billedSeconds: () => 0,
+    estimateUsd: () => 0.02,
+    buildInput: ({ prompt, opts }) => ({
+      prompt,
+      aspect_ratio: String(opts.aspect_ratio ?? "3:4"),
+      resolution: String(opts.resolution ?? "2k"),
+      output_format: "jpeg",
+      num_images: 1,
+    }),
+  },
+  {
+    id: "grokimge",
+    kind: "image",
+    minImages: 1,
+    endpoint: "xai/grok-imagine-image/edit",
+    name: "Grok Imagine Image édition (image)",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES (3 max), le moins cher",
+    priceSummary: "≈ 0,02 $ l'image",
+    options: [imageRatioOption(["3:4", "auto", "1:1", "9:16", "2:3", "16:9"], "3:4"), imageResolutionOption(["1k", "2k"], "2k")],
+    promptGuide: "Prompts courts. Trois références maximum : gros plan, plein pied, et une troisième si besoin.",
+    maxPromptChars: 2000,
+    billedSeconds: () => 0,
+    estimateUsd: () => 0.02,
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      prompt,
+      image_urls: imageUrls.slice(0, 3),
+      aspect_ratio: String(opts.aspect_ratio ?? "3:4"),
+      resolution: String(opts.resolution ?? "2k"),
+      output_format: "jpeg",
+      num_images: 1,
+    }),
+  },
+  {
+    id: "tvsd5",
+    kind: "image",
+    provider: "topview",
+    minImages: 0,
+    rateDependsOnOptions: true,
+    endpoint: "Seedream 5.0 Pro",
+    name: "Seedream 5.0 Pro (image, TopView)",
+    tagline: "Le dernier Seedream — absent de fal, uniquement via TopView",
+    priceSummary: "0,40 crédit en 1K · 0,80 en 2K → 0,08 / 0,16 $",
+    options: [imageRatioOption(["3:4", "1:1", "9:16", "2:3", "16:9"], "3:4"), imageResolutionOption(["1K", "2K"], "2K")],
+    promptGuide: "Mêmes règles que Seedream 4.5. Pas de 4:5 : 3:4. Compter 30 s à 1 min.",
+    maxPromptChars: 3000,
+    billedSeconds: () => 0,
+    estimateUsd: (o) => tvImageCost("Seedream 5.0 Pro", o),
+    buildInput: ({ prompt, opts }) => ({
+      task: "t2i",
+      prompt,
+      aspectRatio: String(opts.aspect_ratio ?? "3:4"),
+      resolution: String(opts.resolution ?? "2K"),
+    }),
+  },
+  {
+    id: "tvsd5e",
+    kind: "image",
+    provider: "topview",
+    minImages: 1,
+    rateDependsOnOptions: true,
+    endpoint: "Seedream 5.0 Pro",
+    name: "Seedream 5.0 Pro édition (image, TopView)",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES (14 max) — la route Seedream qui accepte les visages",
+    priceSummary: "0,40 crédit en 1K · 0,80 en 2K → 0,08 / 0,16 $",
+    options: [imageRatioOption(["3:4", "auto", "1:1", "9:16", "2:3", "16:9"], "3:4"), imageResolutionOption(["1K", "2K"], "2K")],
+    promptGuide: "Désigner les références par « the woman in image 1 ». Ancrer l'identité, décrire ce qui change.",
+    maxPromptChars: 3000,
+    billedSeconds: () => 0,
+    estimateUsd: (o) => tvImageCost("Seedream 5.0 Pro", o),
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      task: "i2i",
+      imageUrls: imageUrls.slice(0, 14),
+      prompt,
+      aspectRatio: String(opts.aspect_ratio ?? "3:4"),
+      resolution: String(opts.resolution ?? "2K"),
+    }),
+  },
+  {
+    id: "tvsd45e",
+    kind: "image",
+    provider: "topview",
+    minImages: 1,
+    rateDependsOnOptions: true,
+    endpoint: "Seedream 4.5",
+    name: "Seedream 4.5 édition (image, TopView)",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES à 0,04 $ — même prix que fal, mais accepte les visages",
+    priceSummary: "0,20 crédit → 0,04 $ (2K ou 4K)",
+    options: [imageRatioOption(["3:4", "auto", "1:1", "9:16", "16:9"], "3:4"), imageResolutionOption(["2K", "4K"], "2K")],
+    promptGuide: "Mêmes règles que Seedream 4.5 édition. À mettre face au 5.0 Pro : si la différence ne se voit pas, c'est lui.",
+    maxPromptChars: 3000,
+    billedSeconds: () => 0,
+    estimateUsd: (o) => tvImageCost("Seedream 4.5", o),
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      task: "i2i",
+      imageUrls: imageUrls.slice(0, 14),
+      prompt,
+      aspectRatio: String(opts.aspect_ratio ?? "3:4"),
+      resolution: String(opts.resolution ?? "2K"),
+    }),
+  },
+  {
+    id: "tvmj",
+    kind: "image",
+    provider: "topview",
+    minImages: 0,
+    endpoint: "Midjourney v8.1",
+    name: "Midjourney v8.1 (image, TopView)",
+    tagline: "La référence esthétique, sans API ailleurs — à brider pour rester réaliste",
+    priceSummary: "0,50 crédit → 0,10 $ l'image",
+    options: [imageRatioOption(RATIOS_INSTA, "4:5")],
+    promptGuide:
+      "Midjourney embellit : imposer « candid unretouched phone photo, natural skin texture, no retouching ». " +
+      "Le format se règle par l'option, pas par --ar. Compter 1 à 2 min.",
+    maxPromptChars: 2000,
+    billedSeconds: () => 0,
+    estimateUsd: () => 0.5 * config.TOPVIEW_USD_PER_CREDIT,
+    buildInput: ({ prompt, opts }) => ({
+      task: "t2i",
+      prompt,
+      aspectRatio: String(opts.aspect_ratio ?? "4:5"),
+    }),
+  },
+  {
+    id: "tvmje",
+    kind: "image",
+    provider: "topview",
+    minImages: 1,
+    endpoint: "Midjourney v8.1",
+    name: "Midjourney v8.1 édition (image, TopView)",
+    tagline: "ÉDITION D'APRÈS RÉFÉRENCES (4 max), esthétique Midjourney",
+    priceSummary: "0,50 crédit → 0,10 $ l'image",
+    options: [imageRatioOption(RATIOS_INSTA, "4:5")],
+    promptGuide: "Ancrer l'identité, décrire ce qui change, brider l'embellissement.",
+    maxPromptChars: 2000,
+    billedSeconds: () => 0,
+    estimateUsd: () => 0.5 * config.TOPVIEW_USD_PER_CREDIT,
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      task: "i2i",
+      imageUrls: imageUrls.slice(0, 4),
+      prompt,
+      aspectRatio: String(opts.aspect_ratio ?? "4:5"),
+    }),
+  },
   {
     id: "kling3",
     rateDependsOnOptions: true,
@@ -1014,6 +1483,11 @@ export const MODELS: VideoModel[] = [
 
 function opts(o: Options): OptionValue {
   return o.resolution ?? "1080p";
+}
+
+/** Images nécessaires en entrée : explicite, sinon 2 en référence, 1 en vidéo. */
+export function minImagesFor(m: VideoModel): number {
+  return m.minImages ?? (m.needsReferences ? 2 : 1);
 }
 
 export function getModel(id: string): VideoModel | undefined {

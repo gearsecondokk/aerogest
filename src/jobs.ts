@@ -59,7 +59,7 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
       if (job.status !== "running") {
         job.status = "running";
         store.saveJob(job);
-        await updateStatusMessage(job, "⚙️ Génération en cours… (généralement 1 à 5 minutes)");
+        await updateStatusMessage(job, job.mediaKind === "image" ? "⚙️ Génération en cours… (quelques secondes à une minute)" : "⚙️ Génération en cours… (généralement 1 à 5 minutes)");
       }
       return;
     }
@@ -106,13 +106,15 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
     const model = getModel(job.modelId);
     const elapsed = job.finishedAt ? Math.round((job.finishedAt - job.createdAt) / 1000) : null;
     const caption = [
-      `✅ <b>Vidéo prête</b> — ${esc(model?.name ?? job.modelId)}`,
+      `✅ <b>${job.mediaKind === "image" ? "Image prête" : "Vidéo prête"}</b> — ${esc(model?.name ?? job.modelId)}`,
       `📝 <i>${esc(truncate(job.prompt, 700))}</i>`,
       `💰 ${job.actualUsd != null ? `${formatUsd(job.actualUsd)} (réel)` : `~${formatUsd(job.estimateUsd)}`}${elapsed != null ? ` · ⏱ ${elapsed}s` : ""}`,
     ].join("\n");
 
     const videoUrl = job.videoUrl!;
-    try {
+    if (job.mediaKind === "image") {
+      await deliverImage(job, videoUrl, caption);
+    } else try {
       // Telegram télécharge lui-même les fichiers < 20 Mo
       await bot.api.sendVideo(job.chatId, videoUrl, { caption, parse_mode: "HTML", supports_streaming: true });
     } catch (err1) {
@@ -139,11 +141,32 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
     pushEvent(
       store,
       job.chatId,
-      `La vidéo du job ${job.id} (${model?.name ?? job.modelId}) est prête et vient d'être envoyée à l'utilisateur. URL : ${videoUrl}` +
+      `${job.mediaKind === "image" ? "L'image" : "La vidéo"} du job ${job.id} (${model?.name ?? job.modelId}) est prête et vient d'être envoyée à l'utilisateur. URL : ${videoUrl}` +
         (job.expandedPrompt
           ? `\nLe modèle a RÉÉCRIT le prompt avant génération. Texte réellement utilisé : « ${job.expandedPrompt.slice(0, 600)} ». Si le rendu s'éloigne du réalisme demandé, c'est probablement là que ça s'est joué — signale-le et propose de relancer avec la réécriture désactivée.`
           : ""),
     );
+  }
+
+  /**
+   * Une image se livre en photo (aperçu immédiat, comparable dans le fil) avec
+   * le lien du fichier original dans la légende — Telegram recompresse les
+   * photos, et un post Instagram se publie depuis l'original. Repli en document
+   * si la photo est refusée (URL > 5 Mo), puis en simple lien.
+   */
+  async function deliverImage(job: Job, url: string, caption: string): Promise<void> {
+    const full = `${caption}\n📎 <a href="${url}">fichier original</a>`;
+    try {
+      await bot.api.sendPhoto(job.chatId, url, { caption: full, parse_mode: "HTML" });
+    } catch (err1) {
+      console.warn(`sendPhoto par URL a échoué (job ${job.id}), tentative en document :`, err1 instanceof Error ? err1.message : err1);
+      try {
+        await bot.api.sendDocument(job.chatId, new InputFile(new URL(url), `image-${job.id}.jpg`), { caption: full, parse_mode: "HTML" });
+      } catch (err2) {
+        console.error(`Envoi de l'image impossible (job ${job.id}) :`, err2);
+        await bot.api.sendMessage(job.chatId, `${caption}\n\n📎 Télécharge-la ici : ${url}`, { parse_mode: "HTML" });
+      }
+    }
   }
 
   /**
@@ -167,7 +190,7 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
     const total = siblings.reduce((a, j) => a + j.estimateUsd, 0);
     await bot.api.sendMessage(
       job.chatId,
-      `⚔️ <b>Duel terminé</b> — ${finished.length} vidéos sur la même tâche (<code>${esc(job.taskKind ?? "?")}</code>, ${formatUsd(total)}).\n\n` +
+      `⚔️ <b>Duel terminé</b> — ${finished.length} rendus sur la même tâche (<code>${esc(job.taskKind ?? "?")}</code>, ${formatUsd(total)}).\n\n` +
         `<b>Laquelle est la meilleure ?</b> Ta réponse alimente le classement : je m'en servirai pour te conseiller la prochaine fois.`,
       { parse_mode: "HTML", reply_markup: kb },
     );

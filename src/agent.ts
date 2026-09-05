@@ -6,7 +6,24 @@ import { cancelRequest, describeFalError } from "./fal.js";
 import { MODELS, defaultOptions, getModel, type Options, type OptionValue, type VideoModel } from "./models.js";
 import { estimateCost, formatUsd } from "./pricing.js";
 import type { HistoryMessage, PendingDuel, PendingGeneration, Session, Store } from "./store.js";
-import { REALISM_PLAYBOOK, MODEL_PLAYBOOK } from "./prompting.js";
+import { REALISM_PLAYBOOK, MODEL_PLAYBOOK, IMAGE_PLAYBOOK } from "./prompting.js";
+import { minImagesFor } from "./models.js";
+
+/** Images présentes dans la conversation (pile de références, sinon la dernière). */
+function imagesIn(session: Session): string[] {
+  return session.imageUrls ?? (session.imageUrl ? [session.imageUrl] : []);
+}
+
+/** Message d'erreur si le modèle manque d'images en entrée, sinon null. */
+function missingImages(model: VideoModel, session: Session): string | null {
+  const have = imagesIn(session).length;
+  const need = minImagesFor(model);
+  if (have >= need) return null;
+  if (need >= 2) {
+    return `Erreur : ${model.name} attend au moins ${need} images du même sujet (${have} disponible). Demande à l'utilisateur d'en envoyer d'autres, ou choisis un modèle qui part d'une seule image.`;
+  }
+  return `Erreur : ${model.name} a besoin d'une image en entrée et il n'y en a aucune dans la conversation. Demande une image à l'utilisateur, ou choisis un modèle texte→image.`;
+}
 
 const client = new Anthropic(config.ANTHROPIC_API_KEY ? { apiKey: config.ANTHROPIC_API_KEY } : {});
 
@@ -31,11 +48,11 @@ function modelCatalog(): string {
           .map((o) => `${o.key} ∈ {${o.choices.map((c) => JSON.stringify(c.value)).join(", ")}} (défaut ${JSON.stringify(o.default)})`)
           .join(" ; ")
       : "aucune option";
-    return `• model_id="${m.id}" — ${m.name} : ${m.tagline}\n  Tarif : ${m.priceSummary}\n  Options : ${opts}\n  Guide de prompt : ${m.promptGuide}`;
+    return `• [${m.kind === "image" ? "IMAGE" : "VIDÉO"}${minImagesFor(m) === 0 ? ", sans image d'entrée" : minImagesFor(m) >= 2 ? `, ${minImagesFor(m)} références min.` : ""}] model_id="${m.id}" — ${m.name} : ${m.tagline}\n  Tarif : ${m.priceSummary}\n  Options : ${opts}\n  Guide de prompt : ${m.promptGuide}`;
   }).join("\n\n");
 }
 
-const SYSTEM_PROMPT = `Tu es l'assistant d'un bot Telegram qui transforme des images en vidéos IA via l'API fal.ai. Tu discutes en français, tu tutoies, tu es direct et concis (Telegram = messages courts). Tu es un expert en prompting pour les modèles image → vidéo, SPÉCIALISÉ dans le contenu réaliste pour TikTok et Reels Instagram : des vidéos de modèle féminin qui doivent passer pour de vraies captations au téléphone, jamais pour des rendus IA ni des pubs de cosmétique. Tu connais par cœur les guides de prompting ci-dessous et tu les appliques sans qu'on te le demande.
+const SYSTEM_PROMPT = `Tu es l'assistant d'un bot Telegram qui génère des vidéos ET des images IA (fal.ai, BytePlus, TopView). Tu discutes en français, tu tutoies, tu es direct et concis (Telegram = messages courts). Tu es un expert en prompting pour les modèles image → vidéo et texte/référence → image, SPÉCIALISÉ dans le contenu réaliste pour TikTok et Instagram (Reels, posts, stories) : des vidéos et des photos de modèle féminin qui doivent passer pour de vraies captations au téléphone, jamais pour des rendus IA ni des pubs de cosmétique. Tu connais par cœur les guides de prompting ci-dessous et tu les appliques sans qu'on te le demande.
 
 FORMAT DES RÉPONSES
 - Texte brut uniquement : pas de Markdown (pas de **, pas de #, pas de tableaux). Les emojis et retours à la ligne sont bienvenus.
@@ -71,13 +88,30 @@ PHASE DE TEST ET CLASSEMENT
 - IMAGE→VIDÉO ou RÉFÉRENCE→VIDÉO se choisit sur la DEMANDE, jamais par habitude : une image de départ à
   animer appelle le premier, un personnage à garder identique d'un clip à l'autre appelle le second. La
   plupart des familles offrent les deux modes ; compare-les dans le même mode, sinon le duel n'a pas de sens.
-- Renseigne task_kind avec le type de demande : 'i2v' (image de départ), 'r2v' (référence), et précise si
+- Renseigne task_kind avec le type de demande : 'i2v' (image de départ), 'r2v' (référence), 't2i' (image
+  depuis le texte), 'i2i' (image éditée d'après références), et précise si
   c'est utile ('i2v-portrait-realiste', 'r2v-personnage-recurrent'). C'est la clé du classement.
 - Consulte model_ratings AVANT de recommander : les verdicts passés de l'utilisateur priment sur les
   caractéristiques annoncées. S'il a déjà tranché sur ce type de tâche, dis-le et propose le vainqueur.
 - Quand un verdict tombe, ne le commente pas longuement : note ce qui a plu, et propose la suite.
 - Quand le classement est net sur un type de tâche (plusieurs duels, un vainqueur récurrent), propose de
   passer en génération simple sur ce modèle plutôt que de continuer à payer des duels.
+
+IMAGES POUR INSTAGRAM (posts, carrousels, stories)
+- Le processus est LE MÊME qu'en vidéo : tu proposes un duel (propose_duel) ou une génération
+  (propose_generation), la carte affiche le coût, l'utilisateur coche et lance, puis désigne le meilleur
+  rendu — c'est ce qui construit le classement, avec les task_kind 't2i' et 'i2i'.
+- Tu décides image ou vidéo d'après la DEMANDE : un post, une photo, un carrousel, une story fixe →
+  image ; un Reel, un TikTok, « anime », « fais bouger » → vidéo. En cas de doute, demande.
+- Sans image dans la conversation, seuls les modèles texte→image sont possibles (marqués « sans image
+  d'entrée » dans le catalogue). Dès qu'il s'agit de REFAIRE le même mannequin, exige des références et
+  passe par un modèle d'édition (marqué ÉDITION D'APRÈS RÉFÉRENCES).
+- Concurrents naturels pour un portrait réaliste : Nano Banana Pro, GPT Image 2, Seedream 5.0 Pro
+  (TopView), FLUX 2 Max, Grok Imagine Image, Midjourney v8.1 (TopView). Une image coûte des centimes :
+  propose 4 concurrents d'emblée, en 1K pour trancher, puis le vainqueur en 2K pour publier.
+- Seedream via fal (sd45e) peut refuser une référence de personne comme en vidéo : pour une édition
+  Seedream avec un visage, préfère tvsd5e / tvsd45e (TopView).
+- Format par défaut 4:5 ; 3:4 pour les modèles qui n'ont pas de 4:5 ; 9:16 pour une story.
 
 LIMITE SEEDANCE — IMAGES DE PERSONNES (mesuré le 2026-09-05)
 - Toute la gamme Seedance REFUSE une image d'ENTRÉE où son filtre voit une personne réelle — un
@@ -120,7 +154,8 @@ RÈGLES
 CATALOGUE DES MODÈLES (fal.ai)
 ${modelCatalog()}
 ${REALISM_PLAYBOOK}
-${MODEL_PLAYBOOK}`;
+${MODEL_PLAYBOOK}
+${IMAGE_PLAYBOOK}`;
 
 // ---------------------------------------------------------------------------
 // Outils
@@ -166,10 +201,8 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
     run: async ({ model_id, options }) => {
       const model = getModel(model_id);
       if (!model) return `Erreur : model_id "${model_id}" inconnu.`;
-      const refCount = (session.imageUrls ?? [session.imageUrl]).length;
-      if (model.needsReferences && refCount < 2) {
-        return `Erreur : ${model.name} est un modèle référence→vidéo, il lui faut au moins 2 images du même sujet (${refCount} disponible). Demande à l'utilisateur d'en envoyer d'autres, ou choisis un modèle image→vidéo.`;
-      }
+      const missing = missingImages(model, session);
+      if (missing) return missing;
       const norm = normalizeOptions(model, options ?? {});
       if ("error" in norm) return `Erreur : ${norm.error}`;
       const est = await estimateCost(model, norm.options);
@@ -190,18 +223,19 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
   const proposeGenerationTool = betaZodTool({
     name: "propose_generation",
     description:
-      "Propose une génération vidéo à l'utilisateur : affiche une carte récapitulative avec le coût et des boutons ✅/❌. " +
+      "Propose une génération (vidéo ou image) à l'utilisateur : affiche une carte récapitulative avec le coût et des boutons ✅/❌. " +
       "La génération ne démarre que si l'utilisateur appuie sur ✅. À appeler uniquement quand le prompt est validé ou que l'utilisateur demande de lancer.",
     inputSchema: z.object({
       model_id: z.string().describe("Identifiant du modèle (model_id du catalogue)"),
       options: OptionsSchema.optional(),
-      prompt: z.string().min(3).describe("Prompt vidéo final, en anglais"),
+      prompt: z.string().min(3).describe("Prompt final, en anglais"),
       negative_prompt: z.string().nullable().optional().describe("Negative prompt (anglais) si le modèle le supporte, sinon null"),
     }),
     run: async ({ model_id, options, prompt, negative_prompt }) => {
-      if (!session.imageUrl) return "Erreur : aucune image dans la conversation. Demande une image à l'utilisateur.";
       const model = getModel(model_id);
       if (!model) return `Erreur : model_id "${model_id}" inconnu.`;
+      const missing = missingImages(model, session);
+      if (missing) return missing;
       const norm = normalizeOptions(model, options ?? {});
       if ("error" in norm) return `Erreur : ${norm.error}`;
 
@@ -253,18 +287,14 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
       negative_prompt: z.string().nullable().optional(),
       task_kind: z
         .string()
-        .describe("Type de tâche, clé du classement : 'i2v' (image de départ), 'r2v' (référence), ou plus précis comme 'i2v-portrait-realiste'"),
+        .describe("Type de tâche, clé du classement : 'i2v' (image de départ), 'r2v' (référence), 't2i' (image depuis le texte), 'i2i' (image éditée d'après références), ou plus précis comme 'i2v-portrait-realiste'"),
     }),
     run: async ({ model_ids, options, prompt, negative_prompt, task_kind }) => {
-      if (!session.imageUrl) return "Erreur : aucune image dans la conversation. Demande une image à l'utilisateur.";
-      const refCount = (session.imageUrls ?? [session.imageUrl]).length;
       const models = [];
       for (const id of model_ids) {
         const m = getModel(id);
         if (!m) return `Erreur : model_id "${id}" inconnu.`;
-        if (m.needsReferences && refCount < 2) {
-          return `Erreur : ${m.name} exige au moins 2 images de référence (${refCount} disponible). Retire-le du duel ou demande d'autres images.`;
-        }
+        { const missing = missingImages(m, session); if (missing) return missing; }
         models.push(m);
       }
       let total = 0;

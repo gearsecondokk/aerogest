@@ -57,20 +57,13 @@ export async function estimateCost(model: VideoModel, options: Options): Promise
   const estimate: CostEstimate = { usd, billedSeconds };
   if (live) {
     estimate.live = live;
-    // fal ne renvoie qu'un tarif de base par endpoint : on ne s'en sert pour chiffrer
-    // que si le prix du modèle ne dépend pas des options (résolution, audio…).
-    if (!model.rateDependsOnOptions) {
-      if (/second/i.test(live.unit)) {
-        estimate.liveUsd = live.unit_price * billedSeconds;
-      } else if (/video/i.test(live.unit)) {
-        estimate.liveUsd = live.unit_price;
-      }
-    } else if (model.rateMultiplier && /second/i.test(live.unit)) {
-      // Le tarif dépend du palier, mais on sait relier le prix de base renvoyé
-      // par fal au palier choisi : on chiffre sur le prix RÉEL. C'est ce qui
-      // permet de suivre une promo sans redéployer (constaté : H3 Max facturé
-      // 0,0125 $/s au lieu de 0,05 pendant une remise de 75 %).
-      estimate.liveUsd = live.unit_price * billedSeconds * model.rateMultiplier(options);
+    // fal ne renvoie qu'un tarif de base par endpoint. On ne chiffre dessus que
+    // si le prix ne dépend pas des options, ou si rateMultiplier sait relier le
+    // palier choisi à ce tarif de base — c'est ce qui permet de suivre une promo
+    // sans redéployer (constaté : H3 Max à 0,0125 $/s au lieu de 0,05 en remise).
+    const units = liveUnits(model, options, live.unit);
+    if (units != null && (!model.rateDependsOnOptions || model.rateMultiplier)) {
+      estimate.liveUsd = live.unit_price * units * (model.rateMultiplier?.(options) ?? 1);
     }
   }
   return estimate;
@@ -78,4 +71,15 @@ export async function estimateCost(model: VideoModel, options: Options): Promise
 
 export function formatUsd(n: number): string {
   return `${n.toFixed(2)} $`;
+}
+
+/** Combien d'unités du tarif live cette génération consomme : secondes de vidéo,
+ *  images, mégapixels… null si l'unité n'est pas comprise (ex. « units » de GPT Image,
+ *  facturé au token — on garde alors l'estimation locale). */
+function liveUnits(model: VideoModel, options: Options, unit: string): number | null {
+  if (/second/i.test(unit)) return model.billedSeconds(options);
+  if (/video/i.test(unit)) return 1;
+  if (/image/i.test(unit)) return model.billedImages?.(options) ?? 1;
+  if (/megapixel/i.test(unit)) return model.billedMegapixels?.(options) ?? null;
+  return null;
 }

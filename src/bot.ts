@@ -4,7 +4,7 @@ import { describeClaudeError, runAgentTurn, type AgentHooks } from "./agent.js";
 import { config } from "./config.js";
 import { cancelRequest, describeFalError, uploadImage } from "./fal.js";
 import { submitVideo, describeError } from "./provider.js";
-import { MODELS, defaultOptions, describeOptions, getModel } from "./models.js";
+import { MODELS, defaultOptions, describeOptions, getModel, minImagesFor } from "./models.js";
 import { estimateCost, formatUsd } from "./pricing.js";
 import type { HistoryMessage, Job, PendingDuel, PendingGeneration, Session, Store } from "./store.js";
 import { downloadImageFromMessage } from "./telegram-files.js";
@@ -98,7 +98,7 @@ export function createBot(store: Store): Bot {
   });
 
   bot.command("models", async (ctx) => {
-    const lines = MODELS.map((m) => `• <b>${esc(m.name)}</b> — ${esc(m.tagline)}\n   💰 ${esc(m.priceSummary)}`);
+    const lines = MODELS.map((m) => `• ${m.kind === "image" ? "🖼" : "🎬"} <b>${esc(m.name)}</b> — ${esc(m.tagline)}\n   💰 ${esc(m.priceSummary)}`);
     await ctx.reply(`🎬 <b>Modèles disponibles</b>\n\n${lines.join("\n\n")}`, { parse_mode: "HTML" });
   });
 
@@ -194,7 +194,7 @@ export function createBot(store: Store): Bot {
   bot.callbackQuery("go:yes", async (ctx) => {
     const session = store.getSession(ctx.chat!.id);
     const pending = session.pending;
-    if (!pending || !session.imageUrl) {
+    if (!pending) {
       await ctx.answerCallbackQuery({ text: "Cette proposition n'est plus valable." });
       return;
     }
@@ -219,10 +219,12 @@ export function createBot(store: Store): Bot {
     const session = store.getSession(ctx.chat!.id);
     const duel = session.pendingDuel;
     if (!duel) { await ctx.answerCallbackQuery({ text: "Ce duel n'est plus valable." }); return; }
-    const refCount = (session.imageUrls ?? []).length;
-    // On n'ajoute au choix que ce qui est réellement lançable ici : un modèle
+    const refCount = (session.imageUrls ?? (session.imageUrl ? [session.imageUrl] : [])).length;
+    // On n'ajoute au choix que ce qui est réellement lançable ici — même nature
+    // (image ou vidéo) que le duel, et assez d'images en entrée : un modèle
     // référence sans assez d'images ferait échouer le duel au lancement.
-    const rest = MODELS.filter((m) => !duel.candidates.includes(m.id) && (!m.needsReferences || refCount >= 2));
+    const kind = getModel(duel.candidates[0] ?? "")?.kind ?? "video";
+    const rest = MODELS.filter((m) => (m.kind ?? "video") === kind && !duel.candidates.includes(m.id) && minImagesFor(m) <= refCount);
     if (rest.length === 0) { await ctx.answerCallbackQuery({ text: "Tout le catalogue est déjà proposé." }); return; }
     const kb = new InlineKeyboard();
     for (const m of rest) kb.text(`➕ ${m.name}`, `duel:a:${m.id}`).row();
@@ -256,7 +258,7 @@ export function createBot(store: Store): Bot {
   bot.callbackQuery("duel:go", async (ctx) => {
     const session = store.getSession(ctx.chat!.id);
     const duel = session.pendingDuel;
-    if (!duel || !session.imageUrl) {
+    if (!duel) {
       await ctx.answerCallbackQuery({ text: "Ce duel n'est plus valable." });
       return;
     }
@@ -424,7 +426,7 @@ export function createBot(store: Store): Bot {
       // Seedance refuse les images de personnes : autant le dire sur la carte
       // plutôt que de laisser un concurrent mourir au lancement.
       const veto = duel.withImages && m.refusesHumanInputImages;
-      lines.push(`${on ? "☑️" : "☐"} <b>${esc(m.name)}</b> — ${formatUsd(c)}${veto ? " 🚫 <i>refusera une image de personne</i>" : ""}`);
+      lines.push(`${on ? "☑️" : "☐"} ${m.kind === "image" ? "🖼" : "🎬"} <b>${esc(m.name)}</b> — ${formatUsd(c)}${veto ? " 🚫 <i>refusera une image de personne</i>" : ""}`);
       kb.text(`${on ? "☑️" : "☐"} ${m.name}${veto ? " 🚫" : ""} · ${c.toFixed(2)} $`, `duel:t:${id}`).row();
     }
     const cap = config.MAX_COST_PER_DUEL_USD ?? config.MAX_COST_PER_VIDEO_USD * 4;
@@ -469,8 +471,8 @@ export function createBot(store: Store): Bot {
       if (!model) continue;
       const opts = { ...defaultOptions(model), ...duel.options };
       const input = model.buildInput({
-        imageUrl: session.imageUrl!,
-        imageUrls: session.imageUrls ?? [session.imageUrl!],
+        imageUrl: session.imageUrl ?? "",
+        imageUrls: session.imageUrls ?? (session.imageUrl ? [session.imageUrl] : []),
         prompt: duel.prompt,
         negativePrompt: duel.negativePrompt,
         opts,
@@ -492,6 +494,7 @@ export function createBot(store: Store): Bot {
         modelId: model.id,
         endpoint: model.endpoint,
         provider: model.provider ?? "fal",
+        mediaKind: model.kind ?? "video",
         input,
         prompt: duel.prompt,
         estimateUsd: Number((est.liveUsd ?? est.usd).toFixed(4)),
@@ -524,8 +527,8 @@ export function createBot(store: Store): Bot {
   async function launchJob(ctx: Context, session: Session, pending: PendingGeneration): Promise<void> {
     const model = getModel(pending.modelId)!;
     const input = model.buildInput({
-      imageUrl: session.imageUrl!,
-      imageUrls: session.imageUrls ?? [session.imageUrl!],
+      imageUrl: session.imageUrl ?? "",
+      imageUrls: session.imageUrls ?? (session.imageUrl ? [session.imageUrl] : []),
       prompt: pending.prompt,
       negativePrompt: pending.negativePrompt,
       opts: pending.options,
@@ -553,6 +556,7 @@ export function createBot(store: Store): Bot {
       modelId: model.id,
       endpoint: model.endpoint,
       provider: model.provider ?? "fal",
+      mediaKind: model.kind ?? "video",
       input,
       prompt: pending.prompt,
       estimateUsd: pending.estimateUsd,

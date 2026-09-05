@@ -69,6 +69,8 @@ export interface Job {
   taskKind?: string;
   /** Fournisseur ayant exécuté ce job (défaut fal, pour les jobs anciens). */
   provider?: "fal" | "byteplus" | "topview";
+  /** Image ou vidéo (défaut vidéo, pour les jobs anciens). */
+  mediaKind?: "image" | "video";
   /** Prompt après réécriture par le modèle, si communiqué. */
   expandedPrompt?: string | null;
   /** Coût réellement facturé quand le fournisseur le communique (TopView). */

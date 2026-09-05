@@ -98,17 +98,44 @@ async function uploadFromUrl(url: string): Promise<string> {
   return String(fileId);
 }
 
+/** Famille de tâche TopView, encodée en préfixe du requestId ("t2i:…", "i2i:…")
+ *  pour que le poller sache quel endpoint interroger. Sans préfixe : image→vidéo. */
+type Task = "i2v" | "t2i" | "i2i";
+const PATHS: Record<Task, string> = {
+  i2v: "/v2/common_task/image2video/task",
+  t2i: "/v1/common_task/text2image/task",
+  i2i: "/v1/common_task/image_edit/task",
+};
+function splitId(requestId: string): { task: Task; id: string } {
+  const m = requestId.match(/^(t2i|i2i):(.+)$/);
+  return m ? { task: m[1] as Task, id: m[2]! } : { task: "i2v", id: requestId };
+}
+
 /**
- * `model` est le nom affiché par TopView ("Seedance 2.5", "Seedance 2.0"…).
- * `input` vient de models.ts : { mode: "i2v" | "r2v", imageUrls, prompt,
- * resolution (480|720|1080), duration, sound ("on"|"off"), aspectRatio? }.
+ * `model` est le nom affiché par TopView ("Seedance 2.5", "Seedream 5.0 Pro"…).
+ * `input` vient de models.ts :
+ *  - vidéo : { mode: "i2v" | "r2v", imageUrls, prompt, resolution (480|720|1080), duration, sound, aspectRatio? }
+ *  - image : { task: "t2i" | "i2i", imageUrls?, prompt, aspectRatio, resolution?, quality? }
  */
 export async function submitVideo(model: string, input: Record<string, unknown>): Promise<string> {
+  const task = (input.task as Task | undefined) ?? "i2v";
   const urls = (input.imageUrls as string[] | undefined) ?? [];
-  if (urls.length === 0) throw new Error("TopView : aucune image fournie.");
   const ids: string[] = [];
   for (const u of urls) ids.push(await uploadFromUrl(u));
 
+  if (task === "t2i" || task === "i2i") {
+    if (task === "i2i" && ids.length === 0) throw new Error("TopView : aucune image de référence fournie.");
+    const body: Record<string, unknown> = { model, prompt: input.prompt, aspectRatio: input.aspectRatio ?? "3:4", generateCount: 1 };
+    if (input.resolution != null) body.resolution = input.resolution;
+    if (input.quality != null) body.quality = input.quality;
+    if (task === "i2i") body.inputImageFileIds = ids;
+    const res = await call(`${PATHS[task]}/submit`, { method: "POST", body: JSON.stringify(body) });
+    const taskId = res?.result?.taskId;
+    if (!taskId) throw new Error(`TopView n'a pas renvoyé de taskId : ${JSON.stringify(res).slice(0, 200)}`);
+    return `${task}:${taskId}`;
+  }
+
+  if (ids.length === 0) throw new Error("TopView : aucune image fournie.");
   const body: Record<string, unknown> = {
     model,
     prompt: input.prompt,
@@ -126,13 +153,13 @@ export async function submitVideo(model: string, input: Record<string, unknown>)
 
   let res: any;
   try {
-    res = await call("/v2/common_task/image2video/task/submit", { method: "POST", body: JSON.stringify(body) });
+    res = await call(`${PATHS.i2v}/submit`, { method: "POST", body: JSON.stringify(body) });
   } catch (err) {
     // En référence le format n'est pas déductible d'une seule image ; si TopView
     // refuse quand même aspectRatio, on le retire et on réessaie une fois.
     if (body.aspectRatio && /aspectRatio/i.test(String(err))) {
       delete body.aspectRatio;
-      res = await call("/v2/common_task/image2video/task/submit", { method: "POST", body: JSON.stringify(body) });
+      res = await call(`${PATHS.i2v}/submit`, { method: "POST", body: JSON.stringify(body) });
     } else {
       throw err;
     }
@@ -142,34 +169,37 @@ export async function submitVideo(model: string, input: Record<string, unknown>)
   return String(taskId);
 }
 
-async function query(taskId: string): Promise<any> {
-  return call(`/v2/common_task/image2video/task/query?taskId=${encodeURIComponent(taskId)}&needCloudFrontUrl=true`, { method: "GET" });
+async function query(requestId: string): Promise<any> {
+  const { task, id } = splitId(requestId);
+  return call(`${PATHS[task]}/query?taskId=${encodeURIComponent(id)}&needCloudFrontUrl=true`, { method: "GET" });
 }
 
 /** Statut traduit dans le vocabulaire de fal, pour que jobs.ts reste inchangé. */
-export async function getStatus(_model: string, taskId: string): Promise<{ status: string; queue_position?: number }> {
-  const body = await query(taskId);
+export async function getStatus(_model: string, requestId: string): Promise<{ status: string; queue_position?: number }> {
+  const body = await query(requestId);
   const s = String(body?.result?.status ?? "").toLowerCase();
   if (s === "init") return { status: "IN_QUEUE", queue_position: 0 };
   if (s === "running") return { status: "IN_PROGRESS" };
   return { status: "COMPLETED" }; // success / fail : traités au résultat
 }
 
-export async function getResult(_model: string, taskId: string): Promise<VideoResult> {
-  const body = await query(taskId);
+export async function getResult(_model: string, requestId: string): Promise<VideoResult> {
+  const { task } = splitId(requestId);
+  const body = await query(requestId);
   const r = body?.result ?? {};
   const status = String(r.status ?? "").toLowerCase();
-  if (status !== "success") {
-    const videoErr = Array.isArray(r.videos) ? r.videos.find((v: any) => v?.errorMsg)?.errorMsg : undefined;
-    throw new Error(`Tâche TopView ${status || "?"} : ${r.errorMsg ?? videoErr ?? "sans message"}`);
+  const items: any[] = Array.isArray(r.videos) ? r.videos : Array.isArray(r.images) ? r.images : [];
+  const ok = items.find((v) => v?.filePath && String(v?.status ?? "success").toLowerCase() === "success");
+  if (status !== "success" || !ok) {
+    const itemErr = items.find((v) => v?.errorMsg)?.errorMsg;
+    throw new Error(`Tâche TopView ${status || "?"} : ${r.errorMsg ?? itemErr ?? "sans message"}`);
   }
-  const url = r.videos?.[0]?.filePath;
-  if (!url) throw new Error(`Réponse TopView sans URL vidéo : ${JSON.stringify(body).slice(0, 300)}`);
-  const credits = typeof r.costCredit === "number" ? r.costCredit : null;
+  const credits = typeof r.costCredit === "number" ? r.costCredit : Number(r.costCredit);
   return {
-    videoUrl: String(url),
+    videoUrl: String(ok.filePath),
+    mediaKind: task === "i2v" ? "video" : "image",
     expandedPrompt: null,
-    actualUsd: credits != null ? Number((credits * config.TOPVIEW_USD_PER_CREDIT).toFixed(4)) : null,
+    actualUsd: Number.isFinite(credits) ? Number((credits * config.TOPVIEW_USD_PER_CREDIT).toFixed(4)) : null,
     raw: body,
   };
 }
