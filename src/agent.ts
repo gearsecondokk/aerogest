@@ -53,6 +53,9 @@ PHASE DE TEST ET CLASSEMENT
 - On est en phase de comparaison : aucun modèle n'est « le meilleur » dans l'absolu, ça dépend du type de
   demande et du goût de l'utilisateur. Par défaut, propose un DUEL (propose_duel) plutôt qu'une génération
   isolée : 2 à 4 modèles comparables sur la MÊME tâche, même prompt, mêmes options.
+- Tu PROPOSES, l'utilisateur DISPOSE : la carte de duel est interactive, il coche et décoche les modèles et
+  peut en ajouter. Explique en une phrase pourquoi tu retiens ces concurrents-là, puis laisse-le ajuster.
+  N'insiste pas s'il retire un modèle que tu jugeais bon.
 - Fais concourir les MEILLEURS modèles, pas les moins chers. L'objet du duel est de savoir ce que la
   technologie sait faire de mieux sur cette demande : un duel entre modèles bon marché n'apprend que
   lequel des bon marché gagne, et si aucun n'est exploitable l'argent est perdu, pas économisé.
@@ -255,7 +258,10 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
         return `Refusé : budget journalier dépassé (déjà ${formatUsd(store.spentToday())}).`;
       }
       const duel: PendingDuel = {
-        modelIds: models.map((m) => m.id),
+        // Tous proposés et cochés d'office : l'utilisateur décoche ce qu'il
+        // ne veut pas et peut en ajouter d'autres depuis la carte.
+        candidates: models.map((m) => m.id),
+        selected: models.map((m) => m.id),
         options: options ? (normalizeOptions(models[0]!, options) as { options: Options }).options : {},
         prompt: prompt.trim(),
         negativePrompt: negative_prompt?.trim() || null,
@@ -267,7 +273,7 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
       session.pendingDuel = duel;
       session.pending = undefined;
       store.saveSession(session);
-      return `Duel proposé : ${lines.join(" · ")} — total ${formatUsd(total)}. L'utilisateur doit appuyer sur ✅. Réponds brièvement et attends.`;
+      return `Duel proposé : ${lines.join(" · ")} — total ${formatUsd(total)}. La carte est INTERACTIVE : il peut décocher des modèles, en ajouter d'autres, et le total se recalcule. Dis-lui en une phrase pourquoi tu as retenu ces concurrents-là, puis laisse-le ajuster et lancer.`;
     },
   });
 

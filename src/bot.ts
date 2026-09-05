@@ -204,11 +204,69 @@ export function createBot(store: Store): Bot {
     await launchJob(ctx, session, pending);
   });
 
+  bot.callbackQuery(/^duel:t:(.+)$/, async (ctx) => {
+    const session = store.getSession(ctx.chat!.id);
+    const duel = session.pendingDuel;
+    if (!duel) { await ctx.answerCallbackQuery({ text: "Ce duel n'est plus valable." }); return; }
+    const id = ctx.match[1]!;
+    duel.selected = duel.selected.includes(id) ? duel.selected.filter((x) => x !== id) : [...duel.selected, id];
+    store.saveSession(session);
+    await ctx.answerCallbackQuery();
+    await refreshDuelCard(ctx, duel);
+  });
+
+  bot.callbackQuery("duel:more", async (ctx) => {
+    const session = store.getSession(ctx.chat!.id);
+    const duel = session.pendingDuel;
+    if (!duel) { await ctx.answerCallbackQuery({ text: "Ce duel n'est plus valable." }); return; }
+    const refCount = (session.imageUrls ?? []).length;
+    // On n'ajoute au choix que ce qui est réellement lançable ici : un modèle
+    // référence sans assez d'images ferait échouer le duel au lancement.
+    const rest = MODELS.filter((m) => !duel.candidates.includes(m.id) && (!m.needsReferences || refCount >= 2));
+    if (rest.length === 0) { await ctx.answerCallbackQuery({ text: "Tout le catalogue est déjà proposé." }); return; }
+    const kb = new InlineKeyboard();
+    for (const m of rest) kb.text(`➕ ${m.name}`, `duel:a:${m.id}`).row();
+    kb.text("↩︎ Retour", "duel:back");
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.editMessageText("Quel modèle ajouter au duel ?", { reply_markup: kb });
+    } catch { /* ignoré */ }
+  });
+
+  bot.callbackQuery(/^duel:a:(.+)$/, async (ctx) => {
+    const session = store.getSession(ctx.chat!.id);
+    const duel = session.pendingDuel;
+    if (!duel) { await ctx.answerCallbackQuery({ text: "Ce duel n'est plus valable." }); return; }
+    const id = ctx.match[1]!;
+    if (!duel.candidates.includes(id)) duel.candidates.push(id);
+    if (!duel.selected.includes(id)) duel.selected.push(id);
+    store.saveSession(session);
+    await ctx.answerCallbackQuery({ text: "Ajouté" });
+    await refreshDuelCard(ctx, duel);
+  });
+
+  bot.callbackQuery("duel:back", async (ctx) => {
+    const session = store.getSession(ctx.chat!.id);
+    const duel = session.pendingDuel;
+    if (!duel) { await ctx.answerCallbackQuery(); return; }
+    await ctx.answerCallbackQuery();
+    await refreshDuelCard(ctx, duel);
+  });
+
   bot.callbackQuery("duel:go", async (ctx) => {
     const session = store.getSession(ctx.chat!.id);
     const duel = session.pendingDuel;
     if (!duel || !session.imageUrl) {
       await ctx.answerCallbackQuery({ text: "Ce duel n'est plus valable." });
+      return;
+    }
+    const cap = config.MAX_COST_PER_DUEL_USD ?? config.MAX_COST_PER_VIDEO_USD * 4;
+    if (duel.selected.length < 2) {
+      await ctx.answerCallbackQuery({ text: "Coche au moins 2 modèles pour comparer.", show_alert: true });
+      return;
+    }
+    if (duel.totalUsd > cap) {
+      await ctx.answerCallbackQuery({ text: `Total ${duel.totalUsd.toFixed(2)} $ > plafond ${cap} $. Décoche un modèle.`, show_alert: true });
       return;
     }
     await ctx.answerCallbackQuery();
@@ -344,23 +402,56 @@ export function createBot(store: Store): Bot {
    * se construit sur ses verdicts. Aucun modèle n'est meilleur dans l'absolu :
    * ça dépend du type de demande et de son goût à lui. */
 
-  async function showDuelCard(session: Session, duel: PendingDuel): Promise<number | undefined> {
-    const lines = duel.modelIds.map((id) => {
+  /** Coût d'un modèle aux options du duel. */
+  async function duelLineCost(modelId: string, opts: PendingDuel["options"]): Promise<number> {
+    const m = getModel(modelId);
+    if (!m) return 0;
+    const est = await estimateCost(m, { ...defaultOptions(m), ...opts });
+    return est.liveUsd ?? est.usd;
+  }
+
+  /** Texte + clavier de la carte, recalculés à chaque coche. */
+  async function duelCard(duel: PendingDuel): Promise<{ text: string; keyboard: InlineKeyboard }> {
+    const kb = new InlineKeyboard();
+    let total = 0;
+    const lines: string[] = [];
+    for (const id of duel.candidates) {
       const m = getModel(id);
-      return `• <b>${esc(m?.name ?? id)}</b>`;
-    });
-    const msg = await bot.api.sendMessage(
-      session.chatId,
-      `⚔️ <b>Duel — ${esc(duel.modelIds.length.toString())} modèles sur la même tâche</b>\n\n${lines.join("\n")}\n\n` +
-        `🏷 Type : <code>${esc(duel.taskKind)}</code>\n` +
-        `💰 <b>Coût total estimé : ${formatUsd(duel.totalUsd)}</b>\n\n` +
-        `Les vidéos arriveront une par une. Tu désigneras la meilleure à la fin.\n\n<b>On lance ?</b>`,
-      {
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard().text("✅ Lancer le duel", "duel:go").text("❌ Annuler", "go:no"),
-      },
-    );
+      if (!m) continue;
+      const c = await duelLineCost(id, duel.options);
+      const on = duel.selected.includes(id);
+      if (on) total += c;
+      lines.push(`${on ? "☑️" : "☐"} <b>${esc(m.name)}</b> — ${formatUsd(c)}`);
+      kb.text(`${on ? "☑️" : "☐"} ${m.name} · ${c.toFixed(2)} $`, `duel:t:${id}`).row();
+    }
+    const cap = config.MAX_COST_PER_DUEL_USD ?? config.MAX_COST_PER_VIDEO_USD * 4;
+    const over = total > cap;
+    kb.text("➕ Ajouter un modèle", "duel:more").row();
+    kb.text(duel.selected.length >= 2 && !over ? "✅ Lancer" : "✅ Lancer (indisponible)", "duel:go").text("❌ Annuler", "go:no");
+    const warn = over
+      ? `\n\n⚠️ ${formatUsd(total)} dépasse le plafond de duel (${formatUsd(cap)}) — décoche un modèle.`
+      : duel.selected.length < 2
+        ? "\n\n⚠️ Il faut au moins 2 modèles pour comparer."
+        : "";
+    const text =
+      `⚔️ <b>Duel — coche les modèles à comparer</b>\n\n${lines.join("\n")}\n\n` +
+      `🏷 Type : <code>${esc(duel.taskKind)}</code>\n` +
+      `💰 <b>Total sélectionné : ${formatUsd(total)}</b> (${duel.selected.length} modèle${duel.selected.length > 1 ? "s" : ""})${warn}`;
+    duel.totalUsd = Number(total.toFixed(4));
+    return { text, keyboard: kb };
+  }
+
+  async function showDuelCard(session: Session, duel: PendingDuel): Promise<number | undefined> {
+    const { text, keyboard } = await duelCard(duel);
+    const msg = await bot.api.sendMessage(session.chatId, text, { parse_mode: "HTML", reply_markup: keyboard });
     return msg.message_id;
+  }
+
+  async function refreshDuelCard(ctx: Context, duel: PendingDuel): Promise<void> {
+    const { text, keyboard } = await duelCard(duel);
+    try {
+      await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+    } catch { /* contenu identique */ }
   }
 
   async function launchDuel(ctx: Context, session: Session, duel: PendingDuel): Promise<void> {
@@ -370,7 +461,7 @@ export function createBot(store: Store): Bot {
     } catch { /* déjà modifié */ }
 
     const launched: string[] = [];
-    for (const modelId of duel.modelIds) {
+    for (const modelId of duel.selected) {
       const model = getModel(modelId);
       if (!model) continue;
       const opts = { ...defaultOptions(model), ...duel.options };

@@ -20,7 +20,10 @@ export interface PendingGeneration {
 
 /** Duel proposé, en attente du ✅ de l'utilisateur. */
 export interface PendingDuel {
-  modelIds: string[];
+  /** Tous les modèles présentés sur la carte, cochés ou non. */
+  candidates: string[];
+  /** Ceux qui partiront réellement — l'utilisateur coche et décoche. */
+  selected: string[];
   options: Options;
   prompt: string;
   negativePrompt: string | null;
