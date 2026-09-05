@@ -3,33 +3,28 @@ import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Options } from "./models.js";
 
-export type SessionState =
-  | "idle"
-  | "awaiting_model"
-  | "awaiting_options"
-  | "awaiting_idea"
-  | "refining"
-  | "awaiting_manual"
-  | "awaiting_confirm";
+export type HistoryMessage = Anthropic.Beta.BetaMessageParam;
 
-export interface Proposal {
+/** Génération proposée par Claude, en attente du ✅ de l'utilisateur. */
+export interface PendingGeneration {
+  modelId: string;
+  options: Options;
   prompt: string;
-  negative_prompt: string | null;
-  explanation: string;
-  question: string | null;
+  negativePrompt: string | null;
+  estimateUsd: number;
+  billedSeconds: number;
+  /** Message Telegram portant les boutons de confirmation */
+  messageId?: number;
+  createdAt: number;
 }
 
 export interface Session {
   chatId: number;
-  state: SessionState;
+  /** Conversation avec Claude (messages user/assistant + résultats d'outils) */
+  history: HistoryMessage[];
   imageUrl?: string;
   imageFileId?: string;
-  modelId?: string;
-  options: Options;
-  /** Historique de la conversation avec Claude pour ce prompt */
-  history: Anthropic.MessageParam[];
-  proposal?: Proposal;
-  estimateUsd?: number;
+  pending?: PendingGeneration;
   updatedAt: number;
 }
 
@@ -78,6 +73,10 @@ export class Store {
           jobs: raw.jobs ?? {},
           spend: raw.spend ?? {},
         };
+        // Sessions d'un ancien format : on repart d'un historique vide
+        for (const s of Object.values(this.data.sessions)) {
+          if (!Array.isArray(s.history)) s.history = [];
+        }
       } catch (err) {
         console.error(`Impossible de lire ${this.file}, on repart de zéro :`, err);
       }
@@ -90,7 +89,7 @@ export class Store {
     const key = String(chatId);
     let s = this.data.sessions[key];
     if (!s) {
-      s = { chatId, state: "idle", options: {}, history: [], updatedAt: Date.now() };
+      s = { chatId, history: [], updatedAt: Date.now() };
       this.data.sessions[key] = s;
       this.scheduleWrite();
     }
@@ -103,19 +102,8 @@ export class Store {
     this.scheduleWrite();
   }
 
-  resetSession(chatId: number, keepImage = false): Session {
-    const old = this.getSession(chatId);
-    const fresh: Session = {
-      chatId,
-      state: "idle",
-      options: {},
-      history: [],
-      updatedAt: Date.now(),
-    };
-    if (keepImage) {
-      fresh.imageUrl = old.imageUrl;
-      fresh.imageFileId = old.imageFileId;
-    }
+  resetSession(chatId: number): Session {
+    const fresh: Session = { chatId, history: [], updatedAt: Date.now() };
     this.data.sessions[String(chatId)] = fresh;
     this.scheduleWrite();
     return fresh;

@@ -1,16 +1,27 @@
 import { Bot, InlineKeyboard, type Context } from "grammy";
 import { randomUUID } from "node:crypto";
+import { describeClaudeError, runAgentTurn, type AgentHooks } from "./agent.js";
 import { config } from "./config.js";
-import { describeFalError, submitVideo, uploadImage } from "./fal.js";
-import { MODELS, defaultOptions, describeOptions, getModel, type OptionValue, type VideoModel } from "./models.js";
-import { estimateCost, formatUsd } from "./pricing.js";
-import { describeClaudeError, proposePrompt } from "./prompter.js";
-import type { Job, Session, Store } from "./store.js";
+import { cancelRequest, describeFalError, submitVideo, uploadImage } from "./fal.js";
+import { MODELS, describeOptions, getModel } from "./models.js";
+import { formatUsd } from "./pricing.js";
+import type { HistoryMessage, Job, PendingGeneration, Session, Store } from "./store.js";
 import { downloadImageFromMessage } from "./telegram-files.js";
 import { esc, truncate } from "./text.js";
 
+const TELEGRAM_MAX = 4000;
+
+/** Ajoute une note système ([Événement]) dans la conversation d'un chat. */
+export function pushEvent(store: Store, chatId: number, text: string): void {
+  const session = store.getSession(chatId);
+  session.history.push({ role: "user", content: `[Événement] ${text}` });
+  store.saveSession(session);
+}
+
 export function createBot(store: Store): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
+  /** Un seul tour d'agent à la fois par chat */
+  const busy = new Set<number>();
 
   // ---- Contrôle d'accès ----------------------------------------------------
   bot.use(async (ctx, next) => {
@@ -39,16 +50,11 @@ export function createBot(store: Store): Bot {
     store.resetSession(ctx.chat.id);
     await ctx.reply(
       [
-        "👋 Salut ! Je transforme tes <b>images en vidéos IA</b> via fal.ai.",
+        "👋 Salut ! Je suis Claude, et je transforme tes <b>images en vidéos IA</b> via fal.ai.",
         "",
-        "<b>Comment ça marche :</b>",
-        "1️⃣ Envoie-moi une image (photo ou fichier)",
-        "2️⃣ Choisis un modèle et ses options (durée, résolution…)",
-        "3️⃣ Décris ce que tu veux : je te propose un prompt optimisé, qu'on affine ensemble",
-        "4️⃣ Je t'annonce le <b>coût estimé</b> → tu confirmes ✅ / ❌",
-        "5️⃣ Je t'envoie la vidéo dès qu'elle est prête 🎬",
+        "Envoie-moi une image et parle-moi normalement : dis-moi ce que tu veux voir bouger, l'ambiance, la durée… Je te conseille un modèle, je rédige le prompt avec toi, je t'annonce le <b>coût</b> et je lance la génération quand tu appuies sur ✅. La vidéo arrive ici dès qu'elle est prête 🎬",
         "",
-        "Commandes : /models (modèles &amp; tarifs) · /jobs (générations en cours) · /history · /cancel · /id",
+        "Commandes : /models (tarifs) · /jobs · /history · /new (nouvelle conversation) · /id",
       ].join("\n"),
       { parse_mode: "HTML" },
     );
@@ -60,30 +66,15 @@ export function createBot(store: Store): Bot {
     });
   });
 
+  bot.command(["new", "cancel", "reset"], async (ctx) => {
+    store.resetSession(ctx.chat.id);
+    busy.delete(ctx.chat.id);
+    await ctx.reply("🧹 Nouvelle conversation. Envoie-moi une image pour commencer.");
+  });
+
   bot.command("models", async (ctx) => {
     const lines = MODELS.map((m) => `• <b>${esc(m.name)}</b> — ${esc(m.tagline)}\n   💰 ${esc(m.priceSummary)}`);
     await ctx.reply(`🎬 <b>Modèles disponibles</b>\n\n${lines.join("\n\n")}`, { parse_mode: "HTML" });
-  });
-
-  bot.command("cancel", async (ctx) => {
-    const s = store.getSession(ctx.chat.id);
-    const hadImage = Boolean(s.imageUrl);
-    store.resetSession(ctx.chat.id, hadImage);
-    await ctx.reply(
-      hadImage
-        ? "❌ Annulé. Ton image est conservée : /again pour relancer avec, ou envoie une nouvelle image."
-        : "❌ Annulé. Envoie-moi une image pour recommencer.",
-    );
-  });
-
-  bot.command("again", async (ctx) => {
-    const s = store.getSession(ctx.chat.id);
-    if (!s.imageUrl) {
-      await ctx.reply("Je n'ai pas d'image en mémoire. Envoie-m'en une !");
-      return;
-    }
-    const fresh = store.resetSession(ctx.chat.id, true);
-    await askModel(ctx, fresh);
   });
 
   bot.command("jobs", async (ctx) => {
@@ -113,13 +104,13 @@ export function createBot(store: Store): Bot {
       const link = j.videoUrl ? ` — <a href="${j.videoUrl}">vidéo</a>` : "";
       return `${icons[j.status]} ${date} · <b>${esc(m?.name ?? j.modelId)}</b> · ${formatUsd(j.estimateUsd)}${link}\n   <i>${esc(truncate(j.prompt, 80))}</i>`;
     });
-    await ctx.reply(`📜 <b>Dernières générations</b>\n\n${lines.join("\n")}\n\n💸 Dépensé aujourd'hui (estimé) : ${formatUsd(store.spentToday())}`, {
-      parse_mode: "HTML",
-      link_preview_options: { is_disabled: true },
-    });
+    await ctx.reply(
+      `📜 <b>Dernières générations</b>\n\n${lines.join("\n")}\n\n💸 Dépensé aujourd'hui (estimé) : ${formatUsd(store.spentToday())}`,
+      { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
+    );
   });
 
-  // ---- Réception d'une image ----------------------------------------------
+  // ---- Image → on la montre à Claude ---------------------------------------
   bot.on(["message:photo", "message:document"], async (ctx) => {
     let img;
     try {
@@ -142,118 +133,66 @@ export function createBot(store: Store): Bot {
       return;
     }
 
-    const session = store.resetSession(ctx.chat.id);
+    const session = store.getSession(ctx.chat.id);
     session.imageUrl = imageUrl;
     session.imageFileId = img.fileId;
-    store.saveSession(session);
-
-    await askModel(ctx, session);
+    session.pending = undefined;
+    const caption = ctx.message.caption?.trim();
+    const message: HistoryMessage = {
+      role: "user",
+      content: [
+        { type: "image", source: { type: "url", url: imageUrl } },
+        {
+          type: "text",
+          text: caption
+            ? `[Événement] Nouvelle image envoyée (elle devient l'image courante). Message joint : ${caption}`
+            : "[Événement] Nouvelle image envoyée (elle devient l'image courante).",
+        },
+      ],
+    };
+    await converse(ctx, session, message);
   });
 
-  // ---- Callbacks -----------------------------------------------------------
-  bot.callbackQuery(/^m:(.+)$/, async (ctx) => {
-    const session = store.getSession(ctx.chat!.id);
-    const model = getModel(ctx.match[1]!);
-    if (!model || !session.imageUrl) {
-      await ctx.answerCallbackQuery({ text: "Session expirée, renvoie une image." });
-      return;
-    }
-    session.modelId = model.id;
-    session.options = defaultOptions(model);
-    session.history = [];
-    session.proposal = undefined;
-    session.state = "awaiting_options";
-    store.saveSession(session);
-    await ctx.answerCallbackQuery();
-    await ctx.editMessageText(`🎬 Modèle : <b>${esc(model.name)}</b>\n💰 ${esc(model.priceSummary)}`, { parse_mode: "HTML" });
-    await askNextOption(ctx, session, model, 0);
+  // ---- Texte libre → Claude -------------------------------------------------
+  bot.on("message:text", async (ctx) => {
+    const text = ctx.message.text.trim();
+    if (text.startsWith("/")) return; // commande inconnue
+    const session = store.getSession(ctx.chat.id);
+    await converse(ctx, session, { role: "user", content: text });
   });
 
-  bot.callbackQuery(/^o:(\d+):(\d+)$/, async (ctx) => {
-    const session = store.getSession(ctx.chat!.id);
-    const model = session.modelId ? getModel(session.modelId) : undefined;
-    if (!model || session.state !== "awaiting_options") {
-      await ctx.answerCallbackQuery({ text: "Cette étape n'est plus active." });
-      return;
-    }
-    const optIndex = Number(ctx.match[1]);
-    const choiceIndex = Number(ctx.match[2]);
-    const opt = model.options[optIndex];
-    const choice = opt?.choices[choiceIndex];
-    if (!opt || !choice) {
-      await ctx.answerCallbackQuery({ text: "Option inconnue." });
-      return;
-    }
-    session.options[opt.key] = choice.value;
-    store.saveSession(session);
-    await ctx.answerCallbackQuery();
-    await ctx.editMessageText(`${esc(opt.label)} → <b>${esc(choice.label)}</b>`, { parse_mode: "HTML" });
-    await askNextOption(ctx, session, model, optIndex + 1);
-  });
-
-  bot.callbackQuery("p:use", async (ctx) => {
-    const session = store.getSession(ctx.chat!.id);
-    const model = session.modelId ? getModel(session.modelId) : undefined;
-    if (!model || !session.proposal || !session.imageUrl) {
-      await ctx.answerCallbackQuery({ text: "Pas de prompt en attente." });
-      return;
-    }
-    await ctx.answerCallbackQuery();
-    await showCostAndConfirm(ctx, session, model);
-  });
-
-  bot.callbackQuery("p:redo", async (ctx) => {
-    const session = store.getSession(ctx.chat!.id);
-    if (session.state !== "refining") {
-      await ctx.answerCallbackQuery({ text: "Pas de prompt en attente." });
-      return;
-    }
-    await ctx.answerCallbackQuery({ text: "Je cherche une autre approche…" });
-    await runPrompter(ctx, session, "Propose une variante clairement différente (autre mouvement de caméra ou autre rythme), en gardant mon idée.");
-  });
-
-  bot.callbackQuery("p:manual", async (ctx) => {
-    const session = store.getSession(ctx.chat!.id);
-    if (!session.modelId || !session.imageUrl) {
-      await ctx.answerCallbackQuery({ text: "Session expirée." });
-      return;
-    }
-    session.state = "awaiting_manual";
-    store.saveSession(session);
-    await ctx.answerCallbackQuery();
-    await ctx.reply("✍️ Envoie-moi le prompt exact à utiliser (en anglais de préférence).");
-  });
-
+  // ---- Boutons de confirmation ---------------------------------------------
   bot.callbackQuery("go:yes", async (ctx) => {
     const session = store.getSession(ctx.chat!.id);
-    const model = session.modelId ? getModel(session.modelId) : undefined;
-    if (session.state !== "awaiting_confirm" || !model || !session.proposal || !session.imageUrl) {
-      await ctx.answerCallbackQuery({ text: "Rien à confirmer." });
+    const pending = session.pending;
+    if (!pending || !session.imageUrl) {
+      await ctx.answerCallbackQuery({ text: "Cette proposition n'est plus valable." });
       return;
     }
     await ctx.answerCallbackQuery();
-    await launchJob(ctx, session, model);
+    session.pending = undefined;
+    store.saveSession(session);
+    await launchJob(ctx, session, pending);
   });
 
   bot.callbackQuery("go:no", async (ctx) => {
     const session = store.getSession(ctx.chat!.id);
-    if (session.state !== "awaiting_confirm") {
+    if (!session.pending) {
       await ctx.answerCallbackQuery({ text: "Rien à annuler." });
       return;
     }
-    session.state = "refining";
+    session.pending = undefined;
     store.saveSession(session);
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText("❌ Génération annulée. Tu peux modifier le prompt (envoie tes remarques) ou revalider.", {
-      reply_markup: proposalKeyboard(),
+    try {
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+    } catch {
+      /* déjà modifié */
+    }
+    await converse(ctx, session, {
+      role: "user",
+      content: "[Événement] L'utilisateur a refusé la génération proposée (❌). Demande-lui ce qu'il veut changer.",
     });
-  });
-
-  bot.callbackQuery("flow:cancel", async (ctx) => {
-    const session = store.getSession(ctx.chat!.id);
-    store.resetSession(ctx.chat!.id, Boolean(session.imageUrl));
-    await ctx.answerCallbackQuery();
-    await ctx.editMessageText("❌ Annulé. Envoie une nouvelle image, ou /again pour réutiliser la dernière.");
   });
 
   bot.callbackQuery(/^j:cancel:(.+)$/, async (ctx) => {
@@ -267,197 +206,73 @@ export function createBot(store: Store): Bot {
       return;
     }
     try {
-      const { cancelRequest } = await import("./fal.js");
       await cancelRequest(job.endpoint, job.requestId);
       job.status = "cancelled";
       store.saveJob(job);
       await ctx.answerCallbackQuery({ text: "Annulation demandée." });
       await ctx.editMessageText("🛑 Génération annulée (si elle avait déjà démarré côté fal, elle peut quand même être facturée).");
+      pushEvent(store, job.chatId, `L'utilisateur a annulé le job ${job.id}.`);
     } catch (err) {
       await ctx.answerCallbackQuery({ text: "Impossible d'annuler : " + truncate(describeFalError(err), 150) });
     }
   });
 
-  // ---- Messages texte (état de la session) ---------------------------------
-  bot.on("message:text", async (ctx) => {
-    const text = ctx.message.text.trim();
-    if (text.startsWith("/")) return; // commande inconnue
-    const session = store.getSession(ctx.chat.id);
-    const model = session.modelId ? getModel(session.modelId) : undefined;
-
-    switch (session.state) {
-      case "awaiting_idea":
-      case "refining":
-        if (!model || !session.imageUrl) break;
-        await runPrompter(ctx, session, text);
-        return;
-
-      case "awaiting_manual":
-        if (!model || !session.imageUrl) break;
-        session.proposal = {
-          prompt: model.maxPromptChars ? text.slice(0, model.maxPromptChars) : text,
-          negative_prompt: null,
-          explanation: "Prompt saisi manuellement.",
-          question: null,
-        };
-        session.state = "refining";
-        store.saveSession(session);
-        await showCostAndConfirm(ctx, session, model);
-        return;
-
-      case "awaiting_model":
-        await ctx.reply("Choisis d'abord un modèle avec les boutons ci-dessus 👆");
-        return;
-
-      case "awaiting_options":
-        await ctx.reply("Réponds avec les boutons pour choisir les options 👆");
-        return;
-
-      case "awaiting_confirm":
-        await ctx.reply("Confirme ou annule avec les boutons ✅ / ❌");
-        return;
-
-      default:
-        break;
-    }
-    await ctx.reply("Envoie-moi une image pour commencer 🖼 (ou /again pour réutiliser la dernière).");
-  });
-
   // ---- Helpers -------------------------------------------------------------
 
-  async function askModel(ctx: Context, session: Session): Promise<void> {
-    const kb = new InlineKeyboard();
-    for (const m of MODELS) kb.text(`${m.name}`, `m:${m.id}`).row();
-    kb.text("❌ Annuler", "flow:cancel");
-    session.state = "awaiting_model";
-    store.saveSession(session);
-    const lines = MODELS.map((m) => `• <b>${esc(m.name)}</b> : ${esc(m.tagline)}\n   💰 ${esc(m.priceSummary)}`);
-    await ctx.reply(`✅ Image reçue !\n\n<b>Quel modèle utiliser ?</b>\n\n${lines.join("\n")}`, {
-      parse_mode: "HTML",
-      reply_markup: kb,
-    });
-  }
+  const hooks: AgentHooks = {
+    showConfirmation: async (session, pending) => {
+      const model = getModel(pending.modelId)!;
+      const lines = [
+        "🧾 <b>Récapitulatif</b>",
+        `🎬 Modèle : <b>${esc(model.name)}</b>`,
+      ];
+      if (model.options.length) lines.push(`⚙️ ${esc(describeOptions(model, pending.options))}`);
+      lines.push(`📝 Prompt : <code>${esc(truncate(pending.prompt, 700))}</code>`);
+      if (pending.negativePrompt) lines.push(`🚫 Negative : <code>${esc(truncate(pending.negativePrompt, 200))}</code>`);
+      lines.push("", `💰 <b>Coût estimé : ${formatUsd(pending.estimateUsd)}</b> (${pending.billedSeconds} s facturées)`, "", "<b>On lance ?</b>");
+      const kb = new InlineKeyboard().text("✅ Oui, générer", "go:yes").text("❌ Non", "go:no");
+      const msg = await bot.api.sendMessage(session.chatId, lines.join("\n"), { parse_mode: "HTML", reply_markup: kb });
+      return msg.message_id;
+    },
+  };
 
-  async function askNextOption(ctx: Context, session: Session, model: VideoModel, fromIndex: number): Promise<void> {
-    const opt = model.options[fromIndex];
-    if (opt) {
-      const kb = new InlineKeyboard();
-      opt.choices.forEach((c, i) => {
-        kb.text(c.label, `o:${fromIndex}:${i}`);
-        if (opt.choices.length > 3 && i % 2 === 1) kb.row();
-      });
-      kb.row().text("❌ Annuler", "flow:cancel");
-      await ctx.reply(opt.label, { reply_markup: kb });
+  /** Ajoute un message à la conversation, fait répondre Claude, envoie la réponse. */
+  async function converse(ctx: Context, session: Session, message: HistoryMessage): Promise<void> {
+    const chatId = session.chatId;
+    if (busy.has(chatId)) {
+      // On garde le message pour le prochain tour plutôt que de le perdre.
+      session.history.push(message);
+      store.saveSession(session);
+      await ctx.reply("⏳ Je finis de répondre à ton message précédent, je prends celui-ci juste après.");
       return;
     }
-    session.state = "awaiting_idea";
+    busy.add(chatId);
+    session.history.push(message);
     store.saveSession(session);
-    const summary = model.options.length ? `\n⚙️ ${esc(describeOptions(model, session.options))}` : "";
-    const est = model.estimateUsd(session.options);
-    await ctx.reply(
-      [
-        `🎬 <b>${esc(model.name)}</b>${summary}`,
-        `💰 Coût estimé : <b>${formatUsd(est)}</b>`,
-        "",
-        "💡 <b>Décris-moi ce que tu veux voir</b> (mouvement du sujet, caméra, ambiance…). Même une idée vague suffit : je regarde l'image et je te propose un prompt optimisé pour ce modèle.",
-      ].join("\n"),
-      { parse_mode: "HTML" },
-    );
-  }
 
-  async function runPrompter(ctx: Context, session: Session, userText: string): Promise<void> {
-    const model = getModel(session.modelId!)!;
-    const thinking = await ctx.reply("🤔 J'analyse l'image et je rédige le prompt…");
-    await ctx.replyWithChatAction("typing");
+    const typing = setInterval(() => void ctx.api.sendChatAction(chatId, "typing").catch(() => {}), 4000);
+    await ctx.api.sendChatAction(chatId, "typing").catch(() => {});
     try {
-      const { proposal, history } = await proposePrompt({
-        model,
-        options: session.options,
-        imageUrl: session.imageUrl!,
-        history: session.history,
-        userText,
-      });
-      session.history = history;
-      session.proposal = proposal;
-      session.state = "refining";
-      store.saveSession(session);
-
-      const parts = [
-        `📝 <b>Prompt proposé</b> (${esc(model.name)})`,
-        `<code>${esc(proposal.prompt)}</code>`,
-      ];
-      if (proposal.negative_prompt) parts.push(`\n🚫 <b>Negative prompt</b>\n<code>${esc(proposal.negative_prompt)}</code>`);
-      parts.push(`\n💬 ${esc(proposal.explanation)}`);
-      if (proposal.question) parts.push(`\n❓ ${esc(proposal.question)}`);
-      parts.push("\n👉 Valide, demande une variante, ou envoie-moi tes remarques pour l'affiner.");
-
-      await ctx.api.editMessageText(thinking.chat.id, thinking.message_id, parts.join("\n"), {
-        parse_mode: "HTML",
-        reply_markup: proposalKeyboard(),
-      });
+      const { text } = await runAgentTurn(session, store, hooks);
+      for (const chunk of splitMessage(text)) {
+        await ctx.api.sendMessage(chatId, chunk);
+      }
     } catch (err) {
-      console.error("Erreur prompter :", err);
-      await ctx.api.editMessageText(
-        thinking.chat.id,
-        thinking.message_id,
-        `❌ ${esc(describeClaudeError(err))}\n\nTu peux réessayer, ou écrire le prompt toi-même.`,
-        { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("✍️ Écrire le prompt moi-même", "p:manual") },
-      );
+      console.error("Erreur agent :", err);
+      await ctx.api.sendMessage(chatId, `❌ ${describeClaudeError(err)}`);
+    } finally {
+      clearInterval(typing);
+      busy.delete(chatId);
     }
   }
 
-  async function showCostAndConfirm(ctx: Context, session: Session, model: VideoModel): Promise<void> {
-    const proposal = session.proposal!;
-    const est = await estimateCost(model, session.options);
-    session.estimateUsd = est.usd;
-    session.state = "awaiting_confirm";
-    store.saveSession(session);
-
-    const lines = [
-      "🧾 <b>Récapitulatif</b>",
-      `🎬 Modèle : <b>${esc(model.name)}</b>`,
-    ];
-    if (model.options.length) lines.push(`⚙️ ${esc(describeOptions(model, session.options))}`);
-    lines.push(`📝 Prompt : <code>${esc(truncate(proposal.prompt, 600))}</code>`);
-    if (proposal.negative_prompt) lines.push(`🚫 Negative : <code>${esc(truncate(proposal.negative_prompt, 200))}</code>`);
-    lines.push("");
-    lines.push(`💰 <b>Coût estimé : ${formatUsd(est.usd)}</b> (${est.billedSeconds} s facturées)`);
-    if (est.live) {
-      const liveLine = est.liveUsd != null ? ` → ${formatUsd(est.liveUsd)}` : "";
-      lines.push(`   <i>Tarif fal.ai actuel : ${est.live.unit_price} ${esc(est.live.currency)} / ${esc(est.live.unit)}${liveLine}</i>`);
-    }
-
-    const warnings: string[] = [];
-    const worst = Math.max(est.usd, est.liveUsd ?? 0);
-    if (worst > config.MAX_COST_PER_VIDEO_USD) {
-      warnings.push(`⛔️ Dépasse la limite par vidéo (${formatUsd(config.MAX_COST_PER_VIDEO_USD)}, MAX_COST_PER_VIDEO_USD).`);
-    }
-    if (config.DAILY_BUDGET_USD != null && store.spentToday() + worst > config.DAILY_BUDGET_USD) {
-      warnings.push(
-        `⛔️ Budget du jour dépassé : ${formatUsd(store.spentToday())} déjà engagés sur ${formatUsd(config.DAILY_BUDGET_USD)}.`,
-      );
-    }
-
-    const kb = new InlineKeyboard();
-    if (warnings.length === 0) {
-      lines.push("", "<b>On lance la génération ?</b>");
-      kb.text("✅ Oui, générer", "go:yes").text("❌ Non", "go:no");
-    } else {
-      lines.push("", ...warnings);
-      kb.text("↩️ Modifier", "go:no");
-    }
-    kb.row().text("🗑 Tout annuler", "flow:cancel");
-
-    await ctx.reply(lines.join("\n"), { parse_mode: "HTML", reply_markup: kb });
-  }
-
-  async function launchJob(ctx: Context, session: Session, model: VideoModel): Promise<void> {
-    const proposal = session.proposal!;
+  async function launchJob(ctx: Context, session: Session, pending: PendingGeneration): Promise<void> {
+    const model = getModel(pending.modelId)!;
     const input = model.buildInput({
       imageUrl: session.imageUrl!,
-      prompt: proposal.prompt,
-      negativePrompt: proposal.negative_prompt,
-      opts: session.options,
+      prompt: pending.prompt,
+      negativePrompt: pending.negativePrompt,
+      opts: pending.options,
     });
 
     let requestId: string;
@@ -465,22 +280,25 @@ export function createBot(store: Store): Bot {
       requestId = await submitVideo(model.endpoint, input);
     } catch (err) {
       console.error("Erreur submit fal :", err);
-      await ctx.reply(`❌ Impossible de lancer la génération : ${esc(describeFalError(err))}`, { parse_mode: "HTML" });
-      session.state = "refining";
-      store.saveSession(session);
+      const reason = describeFalError(err);
+      await ctx.reply(`❌ Impossible de lancer la génération : ${esc(reason)}`, { parse_mode: "HTML" });
+      await converse(ctx, session, {
+        role: "user",
+        content: `[Événement] Le lancement a échoué côté fal.ai : ${reason}. Explique et propose une correction.`,
+      });
       return;
     }
 
     const job: Job = {
       id: randomUUID().slice(0, 8),
-      chatId: ctx.chat!.id,
+      chatId: session.chatId,
       userId: ctx.from!.id,
       requestId,
       modelId: model.id,
       endpoint: model.endpoint,
       input,
-      prompt: proposal.prompt,
-      estimateUsd: session.estimateUsd ?? model.estimateUsd(session.options),
+      prompt: pending.prompt,
+      estimateUsd: pending.estimateUsd,
       status: "queued",
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -501,24 +319,26 @@ export function createBot(store: Store): Bot {
     job.statusMessageId = statusMsg.message_id;
     store.saveJob(job);
 
-    // On garde l'image et le modèle pour enchaîner facilement.
-    const fresh = store.resetSession(ctx.chat!.id, true);
-    fresh.modelId = model.id;
-    fresh.options = { ...session.options };
-    store.saveSession(fresh);
+    pushEvent(
+      store,
+      session.chatId,
+      `L'utilisateur a confirmé (✅). Génération lancée : job ${job.id}, ${model.name}, ~${formatUsd(job.estimateUsd)}. Il sera prévenu automatiquement quand la vidéo sera prête.`,
+    );
   }
 
   return bot;
 }
 
-function proposalKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text("✅ Valider ce prompt", "p:use")
-    .row()
-    .text("🔄 Autre proposition", "p:redo")
-    .text("✍️ Prompt manuel", "p:manual")
-    .row()
-    .text("❌ Annuler", "flow:cancel");
+function splitMessage(text: string): string[] {
+  if (text.length <= TELEGRAM_MAX) return [text];
+  const chunks: string[] = [];
+  let rest = text;
+  while (rest.length > TELEGRAM_MAX) {
+    let cut = rest.lastIndexOf("\n", TELEGRAM_MAX);
+    if (cut < TELEGRAM_MAX / 2) cut = TELEGRAM_MAX;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
 }
-
-export type { OptionValue };

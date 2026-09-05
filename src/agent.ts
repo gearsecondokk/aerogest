@@ -1,0 +1,316 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
+import { z } from "zod";
+import { config } from "./config.js";
+import { cancelRequest, describeFalError } from "./fal.js";
+import { MODELS, defaultOptions, getModel, type Options, type OptionValue, type VideoModel } from "./models.js";
+import { estimateCost, formatUsd } from "./pricing.js";
+import type { HistoryMessage, PendingGeneration, Session, Store } from "./store.js";
+
+const client = new Anthropic(config.ANTHROPIC_API_KEY ? { apiKey: config.ANTHROPIC_API_KEY } : {});
+
+/** Repli serveur en cas de refus de Claude ; désactivé après un 400 (organisation sans accès). */
+let fallbacksSupported = true;
+
+/** Ce que le bot Telegram doit savoir faire pour l'agent. */
+export interface AgentHooks {
+  /** Affiche la carte de confirmation (coût + boutons ✅/❌) et renvoie l'id du message. */
+  showConfirmation: (session: Session, pending: PendingGeneration) => Promise<number>;
+}
+
+// ---------------------------------------------------------------------------
+// System prompt (statique → mis en cache)
+// ---------------------------------------------------------------------------
+
+function modelCatalog(): string {
+  return MODELS.map((m) => {
+    const opts = m.options.length
+      ? m.options
+          .map((o) => `${o.key} ∈ {${o.choices.map((c) => JSON.stringify(c.value)).join(", ")}} (défaut ${JSON.stringify(o.default)})`)
+          .join(" ; ")
+      : "aucune option";
+    return `• model_id="${m.id}" — ${m.name} : ${m.tagline}\n  Tarif : ${m.priceSummary}\n  Options : ${opts}\n  Guide de prompt : ${m.promptGuide}`;
+  }).join("\n\n");
+}
+
+const SYSTEM_PROMPT = `Tu es l'assistant d'un bot Telegram qui transforme des images en vidéos IA via l'API fal.ai. Tu discutes en français, tu tutoies, tu es direct et concis (Telegram = messages courts). Tu es un expert en prompting pour les modèles image → vidéo.
+
+FORMAT DES RÉPONSES
+- Texte brut uniquement : pas de Markdown (pas de **, pas de #, pas de tableaux). Les emojis et retours à la ligne sont bienvenus.
+- Quand tu montres un prompt vidéo, mets-le sur ses propres lignes entre guillemets « … ».
+- Ne répète pas tout le catalogue à chaque message ; cite seulement ce qui est utile.
+
+DÉROULÉ TYPIQUE
+1. L'utilisateur envoie une image (tu la vois dans la conversation). Décris en une phrase ce que tu vois, puis demande ce qu'il veut (mouvement, ambiance, durée) s'il ne l'a pas dit.
+2. Conseille un modèle adapté au besoin et au budget (donne le prix). Appelle estimate_cost si tu as besoin d'un chiffre précis pour des options données.
+3. Rédige le prompt vidéo EN ANGLAIS (30 à 120 mots sauf indication du guide du modèle) : ce qui bouge et comment, mouvement de caméra, rythme, lumière, ambiance. Le premier plan doit correspondre exactement à l'image (même sujet, même cadrage). Montre-le à l'utilisateur et explique tes choix en 1-2 phrases en français.
+4. Quand l'utilisateur est d'accord (ou qu'il te dit clairement de lancer), appelle propose_generation avec le model_id, les options, le prompt (et negative_prompt si utile). Cela affiche à l'utilisateur une carte avec le coût exact et des boutons ✅ / ❌. Dis-lui ensuite d'appuyer sur ✅ pour lancer.
+5. La génération ne démarre QUE si l'utilisateur appuie sur ✅. Ne prétends jamais qu'une vidéo est lancée ou prête tant qu'un message [Événement] ne le confirme pas.
+
+RÈGLES
+- Sans image, tu ne peux rien générer : demande-en une (photo ou fichier).
+- Les messages qui commencent par [Événement] sont des notifications système (confirmation, refus, vidéo prête, échec), pas des paroles de l'utilisateur. Réagis-y naturellement.
+- Respecte les limites de budget renvoyées par les outils ; propose une alternative moins chère si besoin.
+- Si l'utilisateur veut relancer avec la même image mais un autre prompt/modèle, enchaîne directement.
+- N'invente pas de modèles ou d'options hors catalogue.
+
+CATALOGUE DES MODÈLES (fal.ai)
+${modelCatalog()}`;
+
+// ---------------------------------------------------------------------------
+// Outils
+// ---------------------------------------------------------------------------
+
+const OptionsSchema = z
+  .record(z.string(), z.union([z.string(), z.boolean(), z.number()]))
+  .describe("Options du modèle, ex. {\"duration\":\"5\",\"resolution\":\"720p\",\"generate_audio\":true}. Options omises = valeurs par défaut.");
+
+/** Valide et normalise les options pour un modèle donné. Renvoie une erreur lisible sinon. */
+function normalizeOptions(model: VideoModel, raw: Record<string, string | boolean | number>): { options: Options } | { error: string } {
+  const options = defaultOptions(model);
+  for (const [key, value] of Object.entries(raw)) {
+    const opt = model.options.find((o) => o.key === key);
+    if (!opt) {
+      return { error: `Option inconnue "${key}" pour ${model.name}. Options valides : ${model.options.map((o) => o.key).join(", ") || "aucune"}.` };
+    }
+    const normalized: OptionValue =
+      typeof value === "boolean"
+        ? value
+        : typeof value === "number"
+          ? String(value)
+          : /^(true|false)$/i.test(value)
+            ? value.toLowerCase() === "true"
+            : value;
+    const match = opt.choices.find((c) => c.value === normalized || String(c.value).toLowerCase() === String(normalized).toLowerCase());
+    if (!match) {
+      return { error: `Valeur "${String(value)}" invalide pour "${key}". Choix : ${opt.choices.map((c) => JSON.stringify(c.value)).join(", ")}.` };
+    }
+    options[key] = match.value;
+  }
+  return { options };
+}
+
+function buildTools(session: Session, store: Store, hooks: AgentHooks) {
+  const estimateCostTool = betaZodTool({
+    name: "estimate_cost",
+    description: "Calcule le coût estimé (USD) d'une génération pour un modèle et des options donnés, avant de proposer quoi que ce soit.",
+    inputSchema: z.object({
+      model_id: z.string().describe("Identifiant du modèle (model_id du catalogue)"),
+      options: OptionsSchema.optional(),
+    }),
+    run: async ({ model_id, options }) => {
+      const model = getModel(model_id);
+      if (!model) return `Erreur : model_id "${model_id}" inconnu.`;
+      const norm = normalizeOptions(model, options ?? {});
+      if ("error" in norm) return `Erreur : ${norm.error}`;
+      const est = await estimateCost(model, norm.options);
+      return JSON.stringify({
+        model: model.name,
+        options: norm.options,
+        estimated_usd: Number(est.usd.toFixed(3)),
+        billed_seconds: est.billedSeconds,
+        live_fal_unit_price: est.live ?? null,
+        live_estimate_usd: est.liveUsd != null ? Number(est.liveUsd.toFixed(3)) : null,
+        max_per_video_usd: config.MAX_COST_PER_VIDEO_USD,
+        spent_today_usd: Number(store.spentToday().toFixed(3)),
+        daily_budget_usd: config.DAILY_BUDGET_USD ?? null,
+      });
+    },
+  });
+
+  const proposeGenerationTool = betaZodTool({
+    name: "propose_generation",
+    description:
+      "Propose une génération vidéo à l'utilisateur : affiche une carte récapitulative avec le coût et des boutons ✅/❌. " +
+      "La génération ne démarre que si l'utilisateur appuie sur ✅. À appeler uniquement quand le prompt est validé ou que l'utilisateur demande de lancer.",
+    inputSchema: z.object({
+      model_id: z.string().describe("Identifiant du modèle (model_id du catalogue)"),
+      options: OptionsSchema.optional(),
+      prompt: z.string().min(3).describe("Prompt vidéo final, en anglais"),
+      negative_prompt: z.string().nullable().optional().describe("Negative prompt (anglais) si le modèle le supporte, sinon null"),
+    }),
+    run: async ({ model_id, options, prompt, negative_prompt }) => {
+      if (!session.imageUrl) return "Erreur : aucune image dans la conversation. Demande une image à l'utilisateur.";
+      const model = getModel(model_id);
+      if (!model) return `Erreur : model_id "${model_id}" inconnu.`;
+      const norm = normalizeOptions(model, options ?? {});
+      if ("error" in norm) return `Erreur : ${norm.error}`;
+
+      const finalPrompt = model.maxPromptChars ? prompt.trim().slice(0, model.maxPromptChars) : prompt.trim();
+      const est = await estimateCost(model, norm.options);
+      const worst = Math.max(est.usd, est.liveUsd ?? 0);
+
+      if (worst > config.MAX_COST_PER_VIDEO_USD) {
+        return `Refusé : coût estimé ${formatUsd(worst)} > plafond par vidéo ${formatUsd(config.MAX_COST_PER_VIDEO_USD)} (MAX_COST_PER_VIDEO_USD). Propose une durée/résolution/modèle moins cher.`;
+      }
+      if (config.DAILY_BUDGET_USD != null && store.spentToday() + worst > config.DAILY_BUDGET_USD) {
+        return `Refusé : budget journalier ${formatUsd(config.DAILY_BUDGET_USD)} dépassé (déjà ${formatUsd(store.spentToday())} aujourd'hui).`;
+      }
+
+      const pending: PendingGeneration = {
+        modelId: model.id,
+        options: norm.options,
+        prompt: finalPrompt,
+        negativePrompt: negative_prompt?.trim() || null,
+        estimateUsd: Number(est.usd.toFixed(4)),
+        billedSeconds: est.billedSeconds,
+        createdAt: Date.now(),
+      };
+      pending.messageId = await hooks.showConfirmation(session, pending);
+      session.pending = pending;
+      store.saveSession(session);
+
+      return `Carte de confirmation affichée à l'utilisateur (${model.name}, ${formatUsd(est.usd)}). Il doit appuyer sur ✅ pour lancer. Réponds brièvement, sans reproduire le prompt ni le récapitulatif, et attends sa décision.`;
+    },
+  });
+
+  const listJobsTool = betaZodTool({
+    name: "list_jobs",
+    description: "Liste les dernières générations de cette conversation (en cours, terminées, échouées) avec leur statut.",
+    inputSchema: z.object({}),
+    run: async () => {
+      const jobs = store.jobsForChat(session.chatId, 10);
+      if (jobs.length === 0) return "Aucune génération pour cette conversation.";
+      return JSON.stringify(
+        jobs.map((j) => ({
+          job_id: j.id,
+          model: getModel(j.modelId)?.name ?? j.modelId,
+          status: j.status,
+          queue_position: j.queuePosition ?? null,
+          estimated_usd: j.estimateUsd,
+          prompt: j.prompt,
+          video_url: j.videoUrl ?? null,
+          error: j.error ?? null,
+          created_at: new Date(j.createdAt).toISOString(),
+        })),
+      );
+    },
+  });
+
+  const cancelJobTool = betaZodTool({
+    name: "cancel_job",
+    description: "Annule une génération en cours (job_id de list_jobs), à la demande de l'utilisateur.",
+    inputSchema: z.object({ job_id: z.string() }),
+    run: async ({ job_id }) => {
+      const job = store.getJob(job_id);
+      if (!job || job.chatId !== session.chatId) return `Erreur : job "${job_id}" introuvable.`;
+      if (job.status !== "queued" && job.status !== "running") return `Le job ${job_id} est déjà ${job.status}.`;
+      try {
+        await cancelRequest(job.endpoint, job.requestId);
+        job.status = "cancelled";
+        store.saveJob(job);
+        return `Job ${job_id} annulé (si la génération avait déjà démarré côté fal, elle peut être facturée).`;
+      } catch (err) {
+        return `Erreur d'annulation : ${describeFalError(err)}`;
+      }
+    },
+  });
+
+  return [estimateCostTool, proposeGenerationTool, listJobsTool, cancelJobTool];
+}
+
+// ---------------------------------------------------------------------------
+// Boucle de l'agent
+// ---------------------------------------------------------------------------
+
+/** Garde l'historique borné, en repartant toujours d'un vrai message utilisateur. */
+function trimHistory(history: HistoryMessage[], imageUrl: string | undefined): HistoryMessage[] {
+  const max = config.HISTORY_MAX_MESSAGES;
+  if (history.length <= max) return history;
+
+  let start = history.length - max;
+  const isPlainUser = (m: HistoryMessage) =>
+    m.role === "user" &&
+    (typeof m.content === "string" || m.content.every((b) => b.type === "text" || b.type === "image"));
+  while (start < history.length && !isPlainUser(history[start]!)) start++;
+  const kept = history.slice(start);
+
+  // L'image d'origine a pu sortir de la fenêtre : on la réinjecte pour que Claude la voie encore.
+  const stillHasImage = kept.some(
+    (m) => m.role === "user" && typeof m.content !== "string" && m.content.some((b) => b.type === "image"),
+  );
+  if (imageUrl && !stillHasImage) {
+    kept.unshift({
+      role: "user",
+      content: [
+        { type: "image", source: { type: "url", url: imageUrl } },
+        { type: "text", text: "[Événement] Rappel de l'image courante de la conversation (historique tronqué)." },
+      ],
+    });
+  }
+  return kept;
+}
+
+export interface AgentTurnResult {
+  text: string;
+}
+
+/**
+ * Fait répondre Claude au dernier message ajouté à `session.history`.
+ * L'historique complet (outils compris) est réécrit dans la session.
+ */
+export async function runAgentTurn(session: Session, store: Store, hooks: AgentHooks): Promise<AgentTurnResult> {
+  const tools = buildTools(session, store, hooks);
+  const messages = trimHistory(session.history, session.imageUrl);
+
+  const baseParams = {
+    model: config.CLAUDE_MODEL,
+    max_tokens: 8000,
+    output_config: { effort: config.CLAUDE_EFFORT },
+    system: [{ type: "text" as const, text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" as const } }],
+    tools,
+    messages,
+    max_iterations: 8,
+  };
+
+  const run = async (withFallbacks: boolean) => {
+    const runner = client.beta.messages.toolRunner(
+      withFallbacks
+        ? { ...baseParams, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" }
+        : baseParams,
+    );
+    const final = await runner.runUntilDone();
+    return { final, history: [...runner.params.messages] };
+  };
+
+  let result: Awaited<ReturnType<typeof run>>;
+  try {
+    result = await run(fallbacksSupported);
+  } catch (err) {
+    // Si l'organisation n'a pas accès au fallback serveur, on réessaie sans (et on s'en souvient).
+    if (fallbacksSupported && err instanceof Anthropic.BadRequestError && /fallback/i.test(err.message)) {
+      console.warn("Repli serveur (fallbacks) indisponible pour cette organisation : désactivé.");
+      fallbacksSupported = false;
+      result = await run(false);
+    } else {
+      throw err;
+    }
+  }
+
+  session.history = result.history;
+  store.saveSession(session);
+
+  const { final } = result;
+  if (final.stop_reason === "refusal") {
+    const why = final.stop_details?.explanation ? ` (${final.stop_details.explanation})` : "";
+    return { text: `Je ne peux pas t'aider sur cette demande${why}.` };
+  }
+
+  const text = final.content
+    .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("\n")
+    .trim();
+
+  if (!text && final.stop_reason === "max_tokens") return { text: "Ma réponse était trop longue, reformule ta demande plus simplement." };
+  return { text: text || "👍" };
+}
+
+export function describeClaudeError(err: unknown): string {
+  if (err instanceof Anthropic.AuthenticationError) return "Clé API Anthropic invalide (ANTHROPIC_API_KEY).";
+  if (err instanceof Anthropic.RateLimitError) return "Claude est saturé (rate limit), réessaie dans un instant.";
+  if (err instanceof Anthropic.APIConnectionError) return "Impossible de joindre l'API Claude (réseau).";
+  if (err instanceof Anthropic.APIError) return `Erreur Claude ${err.status ?? ""}: ${err.message}`;
+  if (err instanceof Error) return err.message;
+  return String(err);
+}

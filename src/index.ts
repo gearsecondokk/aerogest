@@ -14,10 +14,9 @@ async function main(): Promise<void> {
   await bot.api.setMyCommands([
     { command: "start", description: "Présentation du bot" },
     { command: "models", description: "Modèles disponibles et tarifs" },
-    { command: "again", description: "Nouvelle vidéo avec la dernière image" },
+    { command: "new", description: "Nouvelle conversation" },
     { command: "jobs", description: "Générations en cours" },
     { command: "history", description: "Dernières générations" },
-    { command: "cancel", description: "Annuler l'étape en cours" },
     { command: "id", description: "Afficher mon ID Telegram" },
   ]);
 
@@ -36,7 +35,7 @@ async function main(): Promise<void> {
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
   const me = await bot.api.getMe();
-  console.log(`🤖 Bot @${me.username} démarré (modèle Claude : ${config.CLAUDE_MODEL}).`);
+  console.log(`🤖 Bot @${me.username} démarré (Claude : ${config.CLAUDE_MODEL}, effort ${config.CLAUDE_EFFORT}).`);
   await bot.start({ drop_pending_updates: false });
 }
 

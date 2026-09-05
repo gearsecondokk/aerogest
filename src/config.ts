@@ -6,6 +6,8 @@ const schema = z.object({
   FAL_KEY: z.string().min(10, "FAL_KEY manquant"),
   ANTHROPIC_API_KEY: z.string().optional(),
   CLAUDE_MODEL: z.string().default("claude-opus-5"),
+  CLAUDE_EFFORT: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
+  HISTORY_MAX_MESSAGES: z.coerce.number().int().min(10).default(40),
   ALLOWED_USER_IDS: z.string().default(""),
   MAX_COST_PER_VIDEO_USD: z.coerce.number().positive().default(5),
   DAILY_BUDGET_USD: z.coerce.number().positive().optional(),

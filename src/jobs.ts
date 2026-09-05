@@ -1,4 +1,5 @@
 import { InlineKeyboard, InputFile, type Bot } from "grammy";
+import { pushEvent } from "./bot.js";
 import { config } from "./config.js";
 import { describeFalError, getResult, getStatus } from "./fal.js";
 import { getModel } from "./models.js";
@@ -126,7 +127,7 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
         /* ignore */
       }
     }
-    await bot.api.sendMessage(job.chatId, "🔁 Envoie une autre image, ou /again pour relancer avec la même.");
+    pushEvent(store, job.chatId, `La vidéo du job ${job.id} (${model?.name ?? job.modelId}) est prête et vient d'être envoyée à l'utilisateur. URL : ${videoUrl}`);
   }
 
   async function failJob(job: Job, reason: string): Promise<void> {
@@ -135,6 +136,7 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
     job.finishedAt = Date.now();
     store.saveJob(job);
     const text = `❌ <b>Échec de la génération</b> (Job ${job.id})\n${esc(truncate(reason, 500))}\n\nEn général fal.ai ne facture pas les requêtes en erreur.`;
+    pushEvent(store, job.chatId, `Le job ${job.id} a échoué : ${reason}`);
     if (job.statusMessageId) {
       try {
         await bot.api.editMessageText(job.chatId, job.statusMessageId, text, { parse_mode: "HTML" });

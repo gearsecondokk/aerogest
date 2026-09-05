@@ -1,11 +1,11 @@
 # 🎬 Bot Telegram — vidéos IA (image → vidéo) avec fal.ai
 
-Un bot Telegram qui transforme une image en vidéo IA via l'API [fal.ai](https://fal.ai), avec :
+Un bot Telegram où tu **discutes avec Claude** (API Anthropic) pour transformer une image en vidéo IA via l'API [fal.ai](https://fal.ai) :
 
-- 🖼 **Image → vidéo** : envoie une photo, choisis un modèle (Kling, Veo 3.1, Hailuo, Wan, Seedance) et ses options.
-- 🧠 **Assistant de prompt (Claude)** : décris ton idée en français, Claude regarde l'image et propose un prompt optimisé pour le modèle choisi. Tu affines en discutant, tu demandes une variante, ou tu écris le prompt toi-même.
-- 💰 **Coût annoncé avant de lancer** : estimation locale + tarif live de l'API pricing fal.ai, puis confirmation ✅ / ❌.
-- 🎥 **Livraison automatique** : suivi de la file d'attente fal.ai, la vidéo est envoyée dans Telegram dès qu'elle est prête (les jobs survivent à un redémarrage).
+- 🧠 **Une vraie conversation** : Claude voit ton image, te demande ce que tu veux, te conseille un modèle (Kling, Veo 3.1, Hailuo, Wan, Seedance) selon le besoin et le budget, rédige le prompt avec toi et l'affine à la demande.
+- 🛠 **Claude pilote fal.ai avec des outils** : `estimate_cost`, `propose_generation`, `list_jobs`, `cancel_job` (tool use de l'API Claude).
+- 💰 **Coût annoncé avant de payer** : `propose_generation` affiche une carte récapitulative (modèle, options, prompt, coût estimé + tarif live fal.ai) avec des boutons ✅ / ❌. Le lancement est verrouillé en code : rien ne part sans ton ✅.
+- 🎥 **Livraison automatique** : suivi de la file d'attente fal.ai, la vidéo est envoyée dans Telegram dès qu'elle est prête, et Claude en est informé pour continuer la conversation. Les jobs survivent à un redémarrage.
 - 🔒 **Garde-fous** : liste blanche d'utilisateurs, plafond par vidéo, budget journalier optionnel.
 
 ## Modèles et tarifs (fal.ai, septembre 2026)
@@ -46,40 +46,39 @@ docker compose up -d --build
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) → `/newbot` |
 | `FAL_KEY` | [fal.ai dashboard → Keys](https://fal.ai/dashboard/keys) |
-| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) (assistant de prompt) |
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) (l'IA qui discute avec toi) |
 | `ALLOWED_USER_IDS` | Ton ID Telegram, affiché par la commande `/id` du bot |
 
-Autres réglages : `CLAUDE_MODEL` (défaut `claude-opus-5`), `MAX_COST_PER_VIDEO_USD` (défaut 5), `DAILY_BUDGET_USD` (optionnel), `POLL_INTERVAL_MS`, `DATA_DIR`.
+Autres réglages : `CLAUDE_MODEL` (défaut `claude-opus-5`), `CLAUDE_EFFORT` (`low`…`max`, défaut `medium`), `HISTORY_MAX_MESSAGES` (défaut 40), `MAX_COST_PER_VIDEO_USD` (défaut 5), `DAILY_BUDGET_USD` (optionnel), `POLL_INTERVAL_MS`, `DATA_DIR`.
+
+Le bot active par défaut le repli serveur en cas de refus de Claude (`fallbacks: "default"`) ; si ton organisation n'y a pas accès, il réessaie automatiquement sans.
 
 ## Utilisation
 
-1. `/start` puis envoie une **image** (photo ou fichier image).
-2. Choisis le **modèle** avec les boutons, puis ses options (durée, résolution, audio…).
-3. **Décris ton idée** en français. Le bot répond avec un prompt en anglais, une explication et éventuellement une question.
-   - ✅ *Valider ce prompt* · 🔄 *Autre proposition* · ✍️ *Prompt manuel*
-   - ou envoie simplement tes remarques (« plus lent », « caméra qui tourne autour ») pour l'affiner.
-4. Le bot affiche le **récapitulatif et le coût estimé** → ✅ Oui / ❌ Non.
-5. Un message de statut se met à jour (file d'attente, génération en cours), puis la **vidéo arrive** dans le chat. `/again` relance avec la même image.
+1. `/start` puis envoie une **image** (photo ou fichier image), avec ou sans légende.
+2. **Parle normalement** : « fais tourner la caméra autour, ambiance nuit, 10 s, pas trop cher ». Claude décrit ce qu'il voit, propose un modèle avec son prix et un prompt en anglais ; tu discutes jusqu'à être satisfait.
+3. Quand tu valides, Claude appelle `propose_generation` : une carte **récapitulatif + coût estimé** apparaît → ✅ Oui / ❌ Non.
+4. Un message de statut se met à jour (file d'attente, génération en cours, bouton Annuler), puis la **vidéo arrive** dans le chat. Tu peux enchaîner (« la même en Veo avec du son »).
 
-Commandes : `/models`, `/jobs`, `/history`, `/again`, `/cancel`, `/id`.
+Commandes : `/models`, `/jobs`, `/history`, `/new` (nouvelle conversation), `/id`.
 
 ## Structure
 
 ```
 src/
 ├── index.ts          # démarrage : bot + boucle de suivi des jobs
-├── bot.ts            # commandes Telegram, boutons, machine à états par chat
-├── jobs.ts           # polling de la file fal.ai, envoi des vidéos
-├── models.ts         # registre des modèles (endpoints, options, prix, payloads)
+├── bot.ts            # commandes Telegram, réception images/texte, boutons ✅/❌, lancement des jobs
+├── agent.ts          # agent Claude : system prompt (catalogue), outils, boucle tool runner, historique
+├── jobs.ts           # polling de la file fal.ai, envoi des vidéos, notifications à Claude
+├── models.ts         # registre des modèles (endpoints, options, prix, payloads, guides de prompt)
 ├── pricing.ts        # estimation des coûts + API pricing fal.ai
-├── prompter.ts       # assistant de prompt Claude (sortie structurée, vision)
 ├── fal.ts            # client fal.ai (upload image, submit/status/result/cancel)
 ├── store.ts          # persistance JSON (sessions, jobs, dépenses)
 ├── telegram-files.ts # téléchargement des images Telegram
 └── text.ts           # helpers HTML
 ```
 
-Les données (sessions, jobs, dépenses) sont dans `data/state.json`.
+Les données (conversations, jobs, dépenses) sont dans `data/state.json`. L'historique de chaque conversation est borné (`HISTORY_MAX_MESSAGES`) et l'image courante est réinjectée si elle sort de la fenêtre.
 
 ## Ajouter un modèle
 
