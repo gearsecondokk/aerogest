@@ -98,16 +98,24 @@ async function uploadFromUrl(url: string): Promise<string> {
   return String(fileId);
 }
 
+/** Les modèles écrivent volontiers @Image1, [Image1] ou « image 1 » (syntaxes de
+ *  BytePlus et de fal) : on ramène tout à la forme <<<Image1>>> attendue par Omni
+ *  Reference, sans toucher aux références déjà bien formées. */
+export function normalizeRefs(prompt: string): string {
+  return prompt.replace(/(?<![<\w])@?\[?[Ii]mage\s?(\d+)\]?(?![\w>])/g, "<<<Image$1>>>");
+}
+
 /** Famille de tâche TopView, encodée en préfixe du requestId ("t2i:…", "i2i:…")
  *  pour que le poller sache quel endpoint interroger. Sans préfixe : image→vidéo. */
-type Task = "i2v" | "t2i" | "i2i";
+type Task = "i2v" | "omni" | "t2i" | "i2i";
 const PATHS: Record<Task, string> = {
   i2v: "/v2/common_task/image2video/task",
+  omni: "/v1/common_task/omni_reference/task",
   t2i: "/v1/common_task/text2image/task",
   i2i: "/v1/common_task/image_edit/task",
 };
 function splitId(requestId: string): { task: Task; id: string } {
-  const m = requestId.match(/^(t2i|i2i):(.+)$/);
+  const m = requestId.match(/^(t2i|i2i|omni):(.+)$/);
   return m ? { task: m[1] as Task, id: m[2]! } : { task: "i2v", id: requestId };
 }
 
@@ -122,6 +130,27 @@ export async function submitVideo(model: string, input: Record<string, unknown>)
   const urls = (input.imageUrls as string[] | undefined) ?? [];
   const ids: string[] = [];
   for (const u of urls) ids.push(await uploadFromUrl(u));
+
+  // RÉFÉRENCE→VIDÉO Seedance : chez TopView ce n'est pas l'endpoint image2video
+  // (qui exige alors firstFrameFileId, code 4000) mais Omni Reference, avec des
+  // images nommées et référencées <<<Image1>>> dans le prompt.
+  if (task === "omni") {
+    if (ids.length === 0) throw new Error("TopView : aucune image de référence fournie.");
+    const body: Record<string, unknown> = {
+      model,
+      prompt: normalizeRefs(String(input.prompt ?? "")),
+      inputImages: ids.map((fileId, i) => ({ fileId, name: `Image${i + 1}` })),
+      aspectRatio: input.aspectRatio ?? "9:16",
+      resolution: input.resolution,
+      duration: input.duration,
+      generatingCount: 1,
+      internetSearch: false,
+    };
+    const res = await call(`${PATHS.omni}/submit`, { method: "POST", body: JSON.stringify(body) });
+    const taskId = res?.result?.taskId;
+    if (!taskId) throw new Error(`TopView n'a pas renvoyé de taskId : ${JSON.stringify(res).slice(0, 200)}`);
+    return `omni:${taskId}`;
+  }
 
   if (task === "t2i" || task === "i2i") {
     if (task === "i2i" && ids.length === 0) throw new Error("TopView : aucune image de référence fournie.");
@@ -197,7 +226,7 @@ export async function getResult(_model: string, requestId: string): Promise<Vide
   const credits = typeof r.costCredit === "number" ? r.costCredit : Number(r.costCredit);
   return {
     videoUrl: String(ok.filePath),
-    mediaKind: task === "i2v" ? "video" : "image",
+    mediaKind: task === "i2v" || task === "omni" ? "video" : "image",
     width: typeof ok.width === "number" ? ok.width : undefined,
     height: typeof ok.height === "number" ? ok.height : undefined,
     duration: typeof ok.duration === "number" ? Math.round(ok.duration) : undefined,

@@ -838,22 +838,20 @@ export const MODELS: VideoModel[] = [
         default: "720p",
       },
       ratioOption(["9:16", "16:9", "1:1", "3:4", "4:3"], "9:16"),
-      { key: "sound", label: "🔊 Générer l'audio ?", choices: [{ value: "off", label: "Non" }, { value: "on", label: "Oui" }], default: "off" },
     ],
     promptGuide:
-      "Seedance 2.5 référence via TopView. Désigner les images par @Image1, @Image2… dans l'ordre d'envoi " +
-      "et lier explicitement chaque référence (« @Image1 est la protagoniste, @Image2 le décor »). " +
-      "Décrire le personnage en plus de l'action. Il faut AU MOINS 2 images. Accepte les visages réalistes.",
+      "Seedance 2.5 référence via TopView (endpoint Omni Reference). Désigner les images par <<<Image1>>>, " +
+      "<<<Image2>>>… dans l'ordre d'envoi et lier chaque référence (« <<<Image1>>> is the protagonist, <<<Image2>>> " +
+      "is the setting »). Décrire le personnage en plus de l'action. Il faut AU MOINS 2 images. Accepte les visages réalistes.",
     maxPromptChars: 8000,
     billedSeconds: (o) => num(o.duration, 5),
     estimateUsd: (o) => tvCost("Seedance 2.5", o),
     buildInput: ({ imageUrls, prompt, opts }) => ({
-      mode: "r2v",
+      task: "omni",
       imageUrls,
       prompt,
       resolution: parseInt(String(opts.resolution ?? "720p"), 10),
       duration: num(opts.duration, 5),
-      sound: String(opts.sound ?? "off"),
       aspectRatio: String(opts.aspect_ratio ?? "9:16"),
     }),
   },
