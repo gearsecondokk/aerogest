@@ -62,8 +62,14 @@ PHASE DE TEST ET CLASSEMENT
 - Pour du réalisme haut de gamme, les concurrents naturels sont Veo 3.1, Seedance 2.5 (BytePlus direct),
   Kling 2.5 Turbo Pro et Wan 3.0. Annonce le coût total sans en faire un obstacle : c'est une information,
   pas un critère de sélection.
-- Les modèles économiques (Seedance 2.0 mini, Hailuo 02) servent à ITÉRER sur la formulation d'un prompt
-  une fois qu'on sait quel modèle vise juste — pas à choisir ce modèle.
+- Compare aussi À L'INTÉRIEUR D'UNE MÊME FAMILLE : Seedance 2.0 mini contre 2.5, Kling 3.0 Standard contre
+  Pro, H3 Max contre H3. Le palier haut de gamme ne se justifie que s'il se voit SUR CETTE DEMANDE — s'il
+  ne se voit pas, autant produire dix fois plus pour le même prix. C'est un test à faire tôt.
+- Les modèles économiques servent aussi à ITÉRER sur la formulation d'un prompt une fois qu'on sait quel
+  modèle vise juste.
+- IMAGE→VIDÉO ou RÉFÉRENCE→VIDÉO se choisit sur la DEMANDE, jamais par habitude : une image de départ à
+  animer appelle le premier, un personnage à garder identique d'un clip à l'autre appelle le second. La
+  plupart des familles offrent les deux modes ; compare-les dans le même mode, sinon le duel n'a pas de sens.
 - Renseigne task_kind avec le type de demande : 'i2v' (image de départ), 'r2v' (référence), et précise si
   c'est utile ('i2v-portrait-realiste', 'r2v-personnage-recurrent'). C'est la clé du classement.
 - Consulte model_ratings AVANT de recommander : les verdicts passés de l'utilisateur priment sur les

@@ -669,6 +669,190 @@ export const MODELS: VideoModel[] = [
       watermark: false,
     }),
   },
+  {
+    id: "kling3",
+    rateDependsOnOptions: true,
+    endpoint: "fal-ai/kling-video/v3/pro/image-to-video",
+    name: "Kling 3.0 Pro",
+    tagline: "Dernier Kling — audio natif, jusqu'à 15 s, excellent sur tissus et cheveux",
+    priceSummary: "0,112 $/s sans audio · 0,168 $/s avec (5 s = 0,56 / 0,84 $)",
+    options: [
+      durationOption([5, 10], 5),
+      { key: "audio", label: "🔊 Générer l'audio ?", choices: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }], default: "true" },
+    ],
+    promptGuide:
+      "Kling 3.0 Pro. Formule Kling : Sujet + Mouvement du sujet + Décor + (Caméra + Lumière + Ambiance). " +
+      "60 à 100 mots donnent de meilleurs résultats qu'un prompt saturé. Très bon sur la physique des tissus " +
+      "et des cheveux — donc sur ce qui trahit une vidéo IA en plan mode. negative_prompt supporté (défaut " +
+      "« blur, distort, and low quality »). Pas de réglage de résolution ni de format : hérités de l'image.",
+    maxPromptChars: 2500,
+    billedSeconds: (o) => num(o.duration, 5),
+    // Tarifs relevés sur la page fal ; l API de tarification renvoie 0,14 qui ne
+    // correspond à aucun des deux paliers — pas de rateMultiplier ici.
+    estimateUsd: (o) => num(o.duration, 5) * (String(o.audio ?? "true") === "true" ? 0.168 : 0.112),
+    buildInput: ({ imageUrl, prompt, negativePrompt, opts }) => ({
+      prompt,
+      start_image_url: imageUrl,
+      duration: String(num(opts.duration, 5)),
+      generate_audio: String(opts.audio ?? "true") === "true",
+      ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
+    }),
+  },
+  {
+    id: "kling3s",
+    rateDependsOnOptions: true,
+    endpoint: "fal-ai/kling-video/v3/standard/image-to-video",
+    name: "Kling 3.0 Standard",
+    tagline: "Même génération que le Pro, palier économique — à comparer au Pro",
+    priceSummary: "moins cher que le Pro à qualité proche — à vérifier par un duel",
+    options: [
+      durationOption([5, 10], 5),
+      { key: "audio", label: "🔊 Générer l'audio ?", choices: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }], default: "true" },
+    ],
+    promptGuide:
+      "Kling 3.0 Standard. Mêmes règles que le Pro. Intérêt : vérifier par un duel si l'écart de rendu justifie " +
+      "l'écart de prix sur TES demandes — souvent le palier économique suffit.",
+    maxPromptChars: 2500,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => num(o.duration, 5) * (String(o.audio ?? "true") === "true" ? 0.084 : 0.056),
+    buildInput: ({ imageUrl, prompt, negativePrompt, opts }) => ({
+      prompt,
+      start_image_url: imageUrl,
+      duration: String(num(opts.duration, 5)),
+      generate_audio: String(opts.audio ?? "true") === "true",
+      ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
+    }),
+  },
+  {
+    id: "wan3prime",
+    rateDependsOnOptions: true,
+    endpoint: "alibaba/wan-3.0-prime/image-to-video",
+    name: "Wan 3.0 Prime",
+    tagline: "Variante rapide du Wan 3.0, mêmes capacités — audio inclus",
+    priceSummary: "0,068 $/s en 480p · 0,14 $/s en 720p · 0,28 $/s en 1080p",
+    options: [
+      durationOption([5, 10], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p" },
+        ],
+        default: "720p",
+      },
+      ratioOption(["adaptive", "9:16", "16:9", "1:1", "4:3", "3:4"], "adaptive"),
+      { key: "rewrite", label: "✍️ Réécriture auto du prompt ?", choices: [{ value: "true", label: "Oui (défaut)" }, { value: "false", label: "Non — garder mon prompt" }], default: "true" },
+      { key: "audio", label: "🔊 Générer l'audio ?", choices: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }], default: "true" },
+    ],
+    promptGuide:
+      "Wan 3.0 Prime (image→vidéo). Structure Wan en 4 blocs : mouvement du sujet, caméra, environnement, " +
+      "rythme — l'action du sujet en PREMIER, le modèle lit le début avec le plus d'attention. Le réécrivain " +
+      "est actif par défaut et peut défaire une formulation réaliste travaillée : le couper si le rendu " +
+      "part en esthétique de pub.",
+    maxPromptChars: 8000,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => num(o.duration, 5) * (o.resolution === "1080p" ? 0.28 : o.resolution === "480p" ? 0.068 : 0.14),
+    buildInput: ({ imageUrl, prompt, opts }) => ({
+      prompt,
+      start_image_url: imageUrl,
+      duration: num(opts.duration, 5),
+      resolution: String(opts.resolution ?? "720p"),
+      aspect_ratio: String(opts.aspect_ratio ?? "adaptive"),
+      audio: String(opts.audio ?? "true") === "true",
+      enable_prompt_expansion: String(opts.rewrite ?? "true") === "true",
+    }),
+  },
+  {
+    id: "h3",
+    rateDependsOnOptions: true,
+    endpoint: "minimax/h3/image-to-video",
+    name: "MiniMax H3 (jusqu'en 4K)",
+    tagline: "Le H3 complet — seul du catalogue à monter en 2K et 4K",
+    priceSummary: "0,05 $/s en 480P · 0,06 en 768P · 0,13 en 2K · 0,16 en 4K",
+    options: [
+      durationOption([5, 10], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480P", label: "480p" },
+          { value: "768P", label: "768p" },
+          { value: "2K", label: "2K" },
+          { value: "4K", label: "4K" },
+        ],
+        default: "2K",
+      },
+      { key: "expansion", label: "✍️ Réécriture du prompt ?", choices: [{ value: "balanced", label: "Rapide (~1 s)" }, { value: "quality", label: "Soignée (~30 s)" }], default: "balanced" },
+    ],
+    promptGuide:
+      "MiniMax H3 complet (image→vidéo). Trois blocs : sujet+action, direction caméra, ambiance. UNE SEULE " +
+      "instruction de caméra dominante — empiler les mouvements est la première cause d'échec. Le seul modèle " +
+      "du catalogue qui monte en 2K et 4K. Le format est TOUJOURS hérité de l'image d'entrée.",
+    maxPromptChars: 8000,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => {
+      const r = String(o.resolution ?? "2K");
+      const rate = r === "4K" ? 0.16 : r === "2K" ? 0.13 : r === "768P" ? 0.06 : 0.05;
+      return num(o.duration, 5) * rate;
+    },
+    // Tarif live 0,05 = le palier 480P, confirmé par la page : ratios sûrs.
+    rateMultiplier: (o) => {
+      const r = String(o.resolution ?? "2K");
+      return r === "4K" ? 3.2 : r === "2K" ? 2.6 : r === "768P" ? 1.2 : 1;
+    },
+    buildInput: ({ imageUrl, prompt, opts }) => ({
+      prompt,
+      image_url: imageUrl,
+      duration: num(opts.duration, 5),
+      resolution: String(opts.resolution ?? "2K"),
+      prompt_expansion_mode: String(opts.expansion ?? "balanced"),
+    }),
+  },
+  {
+    id: "h3ref",
+    rateDependsOnOptions: true,
+    needsReferences: true,
+    endpoint: "minimax/h3/reference-to-video",
+    name: "MiniMax H3 — référence (jusqu'en 4K)",
+    tagline: "RÉFÉRENCE→VIDÉO en 2K/4K — personnage cohérent en haute définition",
+    priceSummary: "0,05 $/s en 480P · 0,06 en 768P · 0,13 en 2K · 0,16 en 4K",
+    options: [
+      durationOption([5, 10], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480P", label: "480p" },
+          { value: "768P", label: "768p" },
+          { value: "2K", label: "2K" },
+          { value: "4K", label: "4K" },
+        ],
+        default: "2K",
+      },
+      ratioOption(["9:16", "16:9", "21:9", "1:1", "4:3", "3:4", "adaptive"], "9:16"),
+    ],
+    promptGuide:
+      "MiniMax H3 référence. Références désignées dans le prompt par Image 1, Image 2, Video 1, Audio 1 selon " +
+      "l'ordre d'envoi. Décrire le personnage ET l'action. Modes exclusifs : on ne mélange pas première image " +
+      "et références. Jusqu'en 4K, ce qu'aucun autre modèle référence du catalogue ne fait.",
+    maxPromptChars: 8000,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => {
+      const r = String(o.resolution ?? "2K");
+      const rate = r === "4K" ? 0.16 : r === "2K" ? 0.13 : r === "768P" ? 0.06 : 0.05;
+      return num(o.duration, 5) * rate;
+    },
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      prompt,
+      reference_image_urls: imageUrls,
+      duration: num(opts.duration, 5),
+      resolution: String(opts.resolution ?? "2K"),
+      aspect_ratio: String(opts.aspect_ratio ?? "9:16"),
+      prompt_expansion_mode: "balanced",
+    }),
+  },
 ];
 
 function opts(o: Options): OptionValue {
