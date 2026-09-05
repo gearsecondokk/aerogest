@@ -31,14 +31,21 @@ cp .env.example .env   # puis remplis les clés
 npm run dev            # développement (rechargement auto)
 ```
 
-Production :
+Production, sur un VPS avec Node ≥ 22 et pm2 (première installation) :
 
 ```bash
-npm run build
-npm start
-# ou avec Docker
-docker compose up -d --build
+ssh root@TON_SERVEUR
+git clone -b claude/telegram-ai-video-bot-gt0skd https://github.com/gearsecondokk/aerogest /opt/video-bot
+cd /opt/video-bot
+cp .env.example .env && nano .env      # TELEGRAM_BOT_TOKEN, FAL_KEY, ANTHROPIC_API_KEY, ALLOWED_USER_IDS
+npm ci && npm run build
+pm2 start ecosystem.config.cjs && pm2 save
+pm2 logs video-bot
 ```
+
+Mises à jour suivantes depuis ta machine : `bash deploy.sh` (pull + build + restart pm2).
+
+Alternative Docker : `docker compose up -d --build` (le `.env` est lu automatiquement, les données sont dans `./data`).
 
 ### Clés à renseigner dans `.env`
 
