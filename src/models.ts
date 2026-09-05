@@ -279,7 +279,7 @@ export const MODELS: VideoModel[] = [
       },
     ],
     promptGuide:
-      "Google Veo 3.1 (image-to-video, native audio). Write a cinematic English prompt: subject, action, camera movement, lighting, mood. " +
+      "Google Veo 3.1 (image-to-video, native audio). Write a natural-language English prompt (candid phone footage, never cinematic): subject, action, camera movement, lighting, mood. " +
       "If audio is enabled, describe ambient sound / SFX and put any dialogue in quotes with the speaker (e.g. The woman says: \"...\"). " +
       "Mention 'no subtitles' if dialogue is present. Keep the first frame consistent with the image.",
     billedSeconds: (o) => num(o.duration, 8),

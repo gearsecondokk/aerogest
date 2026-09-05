@@ -8,6 +8,7 @@ import { estimateCost, formatUsd } from "./pricing.js";
 import type { HistoryMessage, PendingDuel, PendingGeneration, Session, Store } from "./store.js";
 import { REALISM_PLAYBOOK, MODEL_PLAYBOOK, IMAGE_PLAYBOOK } from "./prompting.js";
 import { minImagesFor } from "./models.js";
+import { realismIssues } from "./realism.js";
 
 /** Images présentes dans la conversation (pile de références, sinon la dernière). */
 function imagesIn(session: Session): string[] {
@@ -243,6 +244,9 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
       if ("error" in norm) return `Erreur : ${norm.error}`;
 
       const finalPrompt = model.maxPromptChars ? prompt.trim().slice(0, model.maxPromptChars) : prompt.trim();
+      // La doctrine du réalisme se vérifie, elle ne se demande pas : voir realism.ts.
+      const realism = realismIssues(finalPrompt, model.kind ?? "video");
+      if (realism) return realism;
       const est = await estimateCost(model, norm.options);
       const worst = Math.max(est.usd, est.liveUsd ?? 0);
 
@@ -300,6 +304,8 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
         { const missing = missingImages(m, session); if (missing) return missing; }
         models.push(m);
       }
+      const realism = realismIssues(prompt.trim(), models[0]?.kind ?? "video");
+      if (realism) return realism;
       let total = 0;
       const lines: string[] = [];
       for (const m of models) {

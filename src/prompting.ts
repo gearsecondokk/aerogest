@@ -19,6 +19,27 @@ arrière-plan trop propre, cadrage trop bien composé.
 
 Chaque prompt doit donc VOLONTAIREMENT réintroduire du défaut :
 
+AMATEUR OBLIGATOIRE — VÉRIFIÉ PAR LE CODE À CHAQUE PROPOSITION
+  La consigne de l'utilisateur, mot pour mot : « filmé de manière un peu
+  amateur, pour que ça ne fasse pas trop parfait ». Un prompt est REFUSÉ
+  (et tu le corriges) s'il ne contient pas : (1) le téléphone tenu à la main
+  (« filmed by a friend on a phone, handheld »), (2) la peau réelle (« visible
+  pores, uneven skin, unretouched »), (3) au moins DEUX défauts amateur
+  concrets — cadrage un peu décentré ou penché, autofocus qui cherche une
+  seconde, flou de mouvement quand elle bouge, hautes lumières brûlées par la
+  fenêtre, bruit de capteur, caméra qui bouge — et s'il contient UN mot du
+  registre cinéma/pub : cinematic, lens flare, haze, dreamy, ethereal, bokeh,
+  film look, color graded, editorial, slow motion, glow, sun-kissed, glamour,
+  dolly, cinema lens. « Golden hour » désigne une heure, pas un look : on écrit
+  « late afternoon sun, harsh on one side of her face », jamais « warm haze,
+  lens flare, orange glow ».
+  Phrase prête à coller en fin de prompt vidéo : « Filmed by a friend on a
+  phone, handheld and a bit unsteady, framing slightly off-center, autofocus
+  hunting for a moment, brief motion blur when she moves, highlights blown out
+  by the window, mild sensor noise, no color grading, natural skin with visible
+  pores. » Les gestes aussi doivent être imparfaits : un pas raté, le sac qui
+  glisse, un regard hors champ, un rire mal cadré.
+
 PEAU ET VISAGE (le plus important, c'est là que l'œil détecte le faux)
   visible skin pores, fine lines, uneven skin tone, subtle blemishes,
   natural oil sheen on forehead and nose, slight under-eye shadow,
@@ -26,14 +47,17 @@ PEAU ET VISAGE (le plus important, c'est là que l'œil détecte le faux)
 CHEVEUX
   individual strands, flyaway hairs, slight frizz, natural movement with
   head motion, strands falling across the face
-CAMÉRA (imiter un téléphone, PAS du cinéma)
-  handheld phone camera, subtle natural shake, slight sensor noise,
-  natural white balance, mild lens softness at the edges, no color grading,
-  vertical 9:16 framing
+CAMÉRA (un téléphone tenu par quelqu'un, PAS du cinéma)
+  filmed by a friend on a phone, handheld and unsteady, framing slightly
+  off-center, autofocus hunting briefly, brief motion blur, mild sensor noise,
+  no color grading, vertical 9:16 framing. Pas de « dolly », « tracking shot »,
+  « orbit » : quelqu'un marche avec le téléphone, c'est tout.
 LUMIÈRE (réelle, pas construite)
   window daylight, overcast soft light, bathroom mirror light, car interior
   light, golden hour through a window, mixed indoor lighting with slight
   color cast — jamais "studio lighting", "beauty dish", "rim light".
+  La lumière réelle est souvent RATÉE : contre-jour qui brûle la fenêtre,
+  visage à moitié dans l'ombre, néon verdâtre — c'est ce qui fait vrai.
 MOUVEMENT (micro > macro)
   Le réalisme vient des MICRO-mouvements : respiration visible, clignements
   irréguliers, léger transfert de poids, main qui replace une mèche, tissu
@@ -43,8 +67,10 @@ MOUVEMENT (micro > macro)
 
 À BANNIR dans les prompts (c'est ce qui fabrique le look IA) :
   cinematic, hyperrealistic, 8K, ultra detailed, masterpiece, perfect skin,
-  flawless, glamour, professional studio lighting, slow motion dreamy,
-  ethereal glow. Ces mots poussent le modèle vers l'esthétique publicitaire.
+  flawless, glamour, professional studio lighting, slow motion, dreamy,
+  ethereal, glow, lens flare, haze, bokeh, film look, color graded, editorial,
+  sun-kissed, dolly, cinema lens. Ces mots poussent le modèle vers
+  l'esthétique publicitaire — et le code les refuse.
 
 ════════ FORMAT TIKTOK / REELS ════════
 - Vertical 9:16 quand le modèle le permet, sinon cadrer serré.
@@ -87,7 +113,10 @@ Marche              → la démarche est le point faible de tous les modèles :
 Base réutilisable (Wan, Kling, Hailuo, Seedance) :
   "plastic skin, smooth airbrushed skin, beauty filter, face morphing,
    distorted hands, extra fingers, warped background, flickering, jitter,
-   motion blur, oversaturated colors, studio lighting, watermark, text"
+   oversaturated colors, studio lighting, cinematic, color graded, film look,
+   perfect symmetry, watermark, text"
+  (pas de « motion blur » dans le négatif : un peu de flou de mouvement fait
+  précisément partie du réalisme recherché)
 ⚠️ Grok Imagine IGNORE les negative prompts : tout doit y être formulé en
 positif ("clear natural skin" au lieu de "no blemishes").
 `;
@@ -172,7 +201,7 @@ MINIMAX HAILUO (02 / H3) — trois blocs : sujet+action, direction caméra,
   ambiance. UNE SEULE instruction de caméra dominante par plan : soit un plan
   fixe, soit un lent travelling avant. Empiler zoom + orbite + panoramique est
   la première cause d'échec. Écrire la caméra en langage de tournage naturel
-  ("slowly dolly toward her at eye level"), pas en mots-clés. En i2v, préciser
+  ("someone walks a little closer with the phone at eye level"), pas en mots-clés. En i2v, préciser
   ce qui reste STABLE autant que ce qui bouge.
 
 SEEDANCE 2.5 — DOC OFFICIELLE BYTEPLUS (source primaire, 2026-09-05)
@@ -183,6 +212,8 @@ SEEDANCE 2.5 — DOC OFFICIELLE BYTEPLUS (source primaire, 2026-09-05)
   Structure officielle en 3 temps :
    1. Résumé en une phrase :
         Sujet + Lieu + Événement + Genre/Style + Mouvement de caméra
+        (Genre/Style = « candid phone footage, UGC », jamais « short drama »
+        ni « cinematic » ; caméra = « handheld phone », jamais « dolly »)
    2. Description détaillée : découper en segments, par horodatage ("0-3s : …",
       "[1s-4s] …") ou par plans ("Shot 1: [Wide shot, locked-off camera,
       eye-level] …"). Décrire pour chacun : visuel, caméra, action, dialogue, son.
