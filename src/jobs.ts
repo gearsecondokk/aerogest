@@ -1,0 +1,153 @@
+import { InlineKeyboard, InputFile, type Bot } from "grammy";
+import { config } from "./config.js";
+import { describeFalError, getResult, getStatus } from "./fal.js";
+import { getModel } from "./models.js";
+import { formatUsd } from "./pricing.js";
+import type { Job, Store } from "./store.js";
+import { esc, truncate } from "./text.js";
+
+/**
+ * Boucle de suivi des générations : interroge fal.ai, met à jour le message
+ * de statut et envoie la vidéo quand elle est prête. Reprend automatiquement
+ * les jobs en cours après un redémarrage (ils sont persistés dans le store).
+ */
+export function startJobPoller(bot: Bot, store: Store): () => void {
+  let running = false;
+  let stopped = false;
+
+  const tick = async () => {
+    if (running || stopped) return;
+    running = true;
+    try {
+      const jobs = store.activeJobs();
+      await Promise.all(jobs.map((job) => pollJob(job).catch((err) => console.error(`Job ${job.id} :`, err))));
+    } finally {
+      running = false;
+    }
+  };
+
+  const timer = setInterval(tick, config.POLL_INTERVAL_MS);
+  void tick();
+
+  async function pollJob(job: Job): Promise<void> {
+    let status;
+    try {
+      status = await getStatus(job.endpoint, job.requestId);
+    } catch (err) {
+      // 404/410 etc. : le job n'existe plus côté fal
+      const msg = describeFalError(err);
+      if (/\b(404|410)\b/.test(msg)) {
+        await failJob(job, `Requête introuvable côté fal.ai (${msg})`);
+      } else {
+        console.warn(`Statut indisponible pour le job ${job.id} : ${msg}`);
+      }
+      return;
+    }
+
+    if (status.status === "IN_QUEUE") {
+      if (job.status !== "queued" || job.queuePosition !== status.queue_position) {
+        job.status = "queued";
+        job.queuePosition = status.queue_position;
+        store.saveJob(job);
+        await updateStatusMessage(job, `⏳ En file d'attente (position ${status.queue_position})…`);
+      }
+      return;
+    }
+
+    if (status.status === "IN_PROGRESS") {
+      if (job.status !== "running") {
+        job.status = "running";
+        store.saveJob(job);
+        await updateStatusMessage(job, "⚙️ Génération en cours… (généralement 1 à 5 minutes)");
+      }
+      return;
+    }
+
+    // COMPLETED : on récupère le résultat (peut aussi contenir une erreur)
+    try {
+      const result = await getResult(job.endpoint, job.requestId);
+      job.status = "done";
+      job.videoUrl = result.videoUrl;
+      job.finishedAt = Date.now();
+      store.saveJob(job);
+      await deliverVideo(job);
+    } catch (err) {
+      await failJob(job, describeFalError(err));
+    }
+  }
+
+  async function updateStatusMessage(job: Job, line: string): Promise<void> {
+    if (!job.statusMessageId) return;
+    const model = getModel(job.modelId);
+    const text = `🚀 <b>Génération lancée</b> (${esc(model?.name ?? job.modelId)}, ~${formatUsd(job.estimateUsd)})\n${line}\n<i>Job ${job.id}</i>`;
+    try {
+      await bot.api.editMessageText(job.chatId, job.statusMessageId, text, {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard().text("🛑 Annuler", `j:cancel:${job.id}`),
+      });
+    } catch (err) {
+      // "message is not modified" ou message supprimé : sans gravité
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/not modified/i.test(msg)) console.warn(`Édition du statut impossible (job ${job.id}) : ${msg}`);
+    }
+  }
+
+  async function deliverVideo(job: Job): Promise<void> {
+    const model = getModel(job.modelId);
+    const elapsed = job.finishedAt ? Math.round((job.finishedAt - job.createdAt) / 1000) : null;
+    const caption = [
+      `✅ <b>Vidéo prête</b> — ${esc(model?.name ?? job.modelId)}`,
+      `📝 <i>${esc(truncate(job.prompt, 700))}</i>`,
+      `💰 ~${formatUsd(job.estimateUsd)}${elapsed != null ? ` · ⏱ ${elapsed}s` : ""}`,
+    ].join("\n");
+
+    const videoUrl = job.videoUrl!;
+    try {
+      // Telegram télécharge lui-même les fichiers < 20 Mo
+      await bot.api.sendVideo(job.chatId, videoUrl, { caption, parse_mode: "HTML", supports_streaming: true });
+    } catch (err1) {
+      console.warn(`sendVideo par URL a échoué (job ${job.id}), tentative en upload :`, err1 instanceof Error ? err1.message : err1);
+      try {
+        await bot.api.sendVideo(job.chatId, new InputFile(new URL(videoUrl), `video-${job.id}.mp4`), {
+          caption,
+          parse_mode: "HTML",
+          supports_streaming: true,
+        });
+      } catch (err2) {
+        console.error(`Upload de la vidéo impossible (job ${job.id}) :`, err2);
+        await bot.api.sendMessage(job.chatId, `${caption}\n\n📎 Télécharge-la ici : ${videoUrl}`, { parse_mode: "HTML" });
+      }
+    }
+
+    if (job.statusMessageId) {
+      try {
+        await bot.api.editMessageText(job.chatId, job.statusMessageId, `✅ Terminé — <i>Job ${job.id}</i>`, { parse_mode: "HTML" });
+      } catch {
+        /* ignore */
+      }
+    }
+    await bot.api.sendMessage(job.chatId, "🔁 Envoie une autre image, ou /again pour relancer avec la même.");
+  }
+
+  async function failJob(job: Job, reason: string): Promise<void> {
+    job.status = "failed";
+    job.error = reason;
+    job.finishedAt = Date.now();
+    store.saveJob(job);
+    const text = `❌ <b>Échec de la génération</b> (Job ${job.id})\n${esc(truncate(reason, 500))}\n\nEn général fal.ai ne facture pas les requêtes en erreur.`;
+    if (job.statusMessageId) {
+      try {
+        await bot.api.editMessageText(job.chatId, job.statusMessageId, text, { parse_mode: "HTML" });
+        return;
+      } catch {
+        /* on envoie un nouveau message */
+      }
+    }
+    await bot.api.sendMessage(job.chatId, text, { parse_mode: "HTML" });
+  }
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
