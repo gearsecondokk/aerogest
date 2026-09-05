@@ -68,9 +68,11 @@ export interface Job {
   /** Nature de la tâche, clé du classement : i2v, r2v… */
   taskKind?: string;
   /** Fournisseur ayant exécuté ce job (défaut fal, pour les jobs anciens). */
-  provider?: "fal" | "byteplus";
+  provider?: "fal" | "byteplus" | "topview";
   /** Prompt après réécriture par le modèle, si communiqué. */
   expandedPrompt?: string | null;
+  /** Coût réellement facturé quand le fournisseur le communique (TopView). */
+  actualUsd?: number;
   id: string;
   chatId: number;
   userId: number;

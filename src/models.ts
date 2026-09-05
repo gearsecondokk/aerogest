@@ -6,6 +6,8 @@
  * via l'API pricing de fal (voir pricing.ts) pour affichage.
  */
 
+import { config } from "./config.js";
+
 export type OptionValue = string | boolean;
 
 export interface ModelOptionChoice {
@@ -27,8 +29,10 @@ export interface VideoModel {
   /** Identifiant court utilisé dans les callbacks Telegram (max ~20 chars) */
   id: string;
   /** Fournisseur d'exécution. Par défaut fal ; 'byteplus' appelle l'API
-   *  ModelArk en direct, environ deux fois moins chère sur Seedance. */
-  provider?: "fal" | "byteplus";
+   *  ModelArk en direct, environ deux fois moins chère sur Seedance ;
+   *  'topview' passe par api.topview.ai — la seule route Seedance qui accepte
+   *  une image de personne (voir topview.ts). */
+  provider?: "fal" | "byteplus" | "topview";
   /** Endpoint fal.ai */
   endpoint: string;
   name: string;
@@ -106,6 +110,21 @@ const durationOption = (values: number[], def: number): ModelOption => ({
   choices: values.map((v) => ({ value: String(v), label: `${v} s` })),
   default: String(def),
 });
+
+/** Crédits TopView par seconde de vidéo, par modèle et résolution. 2.5/480p et
+ *  2.0/480p mesurés le 2026-09-05 (2,8 et 2,0 crédits pour 4 s) ; le reste vient
+ *  de leur guide d'API. La valeur d'un crédit dépend du pack acheté
+ *  (TOPVIEW_USD_PER_CREDIT) : relevé le 2026-09-05, 0,30 $ en pack de 100 à 500,
+ *  0,199 $ le pack de 1000 réservé aux plans annuels, 0,39 $ le pack de 25. */
+const TV_CREDITS_PER_SEC: Record<string, Record<string, number>> = {
+  "Seedance 2.5": { "480p": 0.7, "720p": 1.5 },
+  "Seedance 2.0": { "480p": 0.5, "720p": 1.0, "1080p": 2.0 },
+};
+const tvCost = (model: string, o: Options, def = 5): number => {
+  const res = String(o.resolution ?? "720p");
+  const perSec = TV_CREDITS_PER_SEC[model]?.[res] ?? TV_CREDITS_PER_SEC[model]?.["720p"] ?? 1.5;
+  return num(o.duration, def) * perSec * config.TOPVIEW_USD_PER_CREDIT;
+};
 
 
 /* ── Tarification BytePlus ────────────────────────────────────────────
@@ -687,6 +706,124 @@ export const MODELS: VideoModel[] = [
       duration: num(opts.duration, 5),
       generate_audio: String(opts.generate_audio ?? "true") === "true",
       watermark: false,
+    }),
+  },
+
+  // ── TopView : la route Seedance qui accepte les images de personnes ──────
+  {
+    id: "tv25",
+    provider: "topview",
+    rateDependsOnOptions: true,
+    endpoint: "Seedance 2.5",
+    name: "Seedance 2.5 (TopView)",
+    tagline: "Le Seedance qui ACCEPTE les images de personnes — image→vidéo, 4 à 15 s",
+    priceSummary: "≈ 0,7 crédit/s en 480p · 1,5 crédit/s en 720p — au pack de 1000 (0,199 $ le crédit) : ~0,70 $ la vidéo 480p de 5 s, ~1,50 $ en 720p",
+    options: [
+      durationOption([4, 5, 8, 10, 15], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+        ],
+        default: "720p",
+      },
+      { key: "sound", label: "🔊 Générer l'audio ?", choices: [{ value: "off", label: "Non" }, { value: "on", label: "Oui" }], default: "off" },
+    ],
+    promptGuide:
+      "Seedance 2.5 via TopView : même modèle, mêmes règles de rédaction (résumé Sujet + Lieu + Événement + " +
+      "Style + Caméra, puis découpage horodaté en secondes entières). C'est la SEULE route Seedance qui " +
+      "accepte une image de personne réaliste : c'est lui qu'il faut proposer pour animer un mannequin. " +
+      "Le format est celui de l'image (aucun choix de ratio). Compter 3 à 4 minutes de génération.",
+    maxPromptChars: 8000,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => tvCost("Seedance 2.5", o),
+    buildInput: ({ imageUrl, prompt, opts }) => ({
+      mode: "i2v",
+      imageUrls: [imageUrl],
+      prompt,
+      resolution: parseInt(String(opts.resolution ?? "720p"), 10),
+      duration: num(opts.duration, 5),
+      sound: String(opts.sound ?? "off"),
+    }),
+  },
+  {
+    id: "tv25ref",
+    provider: "topview",
+    rateDependsOnOptions: true,
+    needsReferences: true,
+    endpoint: "Seedance 2.5",
+    name: "Seedance 2.5 référence (TopView)",
+    tagline: "RÉFÉRENCE→VIDÉO avec des personnes — 2 images ou plus du même sujet",
+    priceSummary: "≈ 0,7 crédit/s en 480p · 1,5 crédit/s en 720p — au pack de 1000 : ~0,70 $ (480p) à 1,50 $ (720p) la vidéo de 5 s",
+    options: [
+      durationOption([4, 5, 8, 10, 15], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+        ],
+        default: "720p",
+      },
+      ratioOption(["9:16", "16:9", "1:1", "3:4", "4:3"], "9:16"),
+      { key: "sound", label: "🔊 Générer l'audio ?", choices: [{ value: "off", label: "Non" }, { value: "on", label: "Oui" }], default: "off" },
+    ],
+    promptGuide:
+      "Seedance 2.5 référence via TopView. Désigner les images par @Image1, @Image2… dans l'ordre d'envoi " +
+      "et lier explicitement chaque référence (« @Image1 est la protagoniste, @Image2 le décor »). " +
+      "Décrire le personnage en plus de l'action. Il faut AU MOINS 2 images. Accepte les visages réalistes.",
+    maxPromptChars: 8000,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => tvCost("Seedance 2.5", o),
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      mode: "r2v",
+      imageUrls,
+      prompt,
+      resolution: parseInt(String(opts.resolution ?? "720p"), 10),
+      duration: num(opts.duration, 5),
+      sound: String(opts.sound ?? "off"),
+      aspectRatio: String(opts.aspect_ratio ?? "9:16"),
+    }),
+  },
+  {
+    id: "tv20",
+    provider: "topview",
+    rateDependsOnOptions: true,
+    endpoint: "Seedance 2.0",
+    name: "Seedance 2.0 (TopView)",
+    tagline: "Le palier en dessous, pour vérifier si la 2.5 se voit vraiment — accepte les personnes",
+    priceSummary: "≈ 0,5 crédit/s en 480p · 1 crédit/s en 720p · 2 crédits/s en 1080p — au pack de 1000 : ~0,50 $ (480p) à 1,00 $ (720p) la vidéo de 5 s",
+    options: [
+      durationOption([4, 5, 8, 10, 15], 5),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+          { value: "1080p", label: "1080p" },
+        ],
+        default: "720p",
+      },
+      { key: "sound", label: "🔊 Générer l'audio ?", choices: [{ value: "off", label: "Non" }, { value: "on", label: "Oui" }], default: "off" },
+    ],
+    promptGuide:
+      "Seedance 2.0 via TopView : mêmes règles que la 2.5, mêmes forces sur les visages réalistes. " +
+      "À mettre face à la 2.5 sur la même demande : si la différence ne se voit pas, c'est lui qu'on garde. " +
+      "Format = celui de l'image.",
+    maxPromptChars: 8000,
+    billedSeconds: (o) => num(o.duration, 5),
+    estimateUsd: (o) => tvCost("Seedance 2.0", o),
+    buildInput: ({ imageUrl, prompt, opts }) => ({
+      mode: "i2v",
+      imageUrls: [imageUrl],
+      prompt,
+      resolution: parseInt(String(opts.resolution ?? "720p"), 10),
+      duration: num(opts.duration, 5),
+      sound: String(opts.sound ?? "off"),
     }),
   },
   {

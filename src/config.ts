@@ -7,6 +7,13 @@ const schema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   /** Clé BytePlus ModelArk. Absente = les modèles BytePlus sont masqués. */
   BYTEPLUS_API_KEY: z.string().optional(),
+  /** Clé TopView (dashboard → API Settings) : la route Seedance qui accepte les
+   *  images de personnes. L'Uid est lu automatiquement s'il manque. */
+  TOPVIEW_API_KEY: z.string().optional(),
+  TOPVIEW_UID: z.string().optional(),
+  /** Valeur d'un crédit TopView en USD selon le pack acheté : 0,30 $ en pack de
+   *  100 à 500 crédits, 0,199 $ le pack de 1000 (plan annuel requis). */
+  TOPVIEW_USD_PER_CREDIT: z.coerce.number().positive().default(0.3),
   CLAUDE_MODEL: z.string().default("claude-opus-5"),
   CLAUDE_EFFORT: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
   HISTORY_MAX_MESSAGES: z.coerce.number().int().min(10).default(40),

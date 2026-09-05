@@ -70,6 +70,12 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
       job.status = "done";
       job.videoUrl = result.videoUrl;
       job.expandedPrompt = result.expandedPrompt ?? null;
+      if (result.actualUsd != null) {
+        // Coût réel communiqué par le fournisseur (TopView renvoie les crédits
+        // débités) : on corrige la dépense du jour, comptée à l'estimation au lancement.
+        job.actualUsd = result.actualUsd;
+        store.addSpend(result.actualUsd - job.estimateUsd);
+      }
       job.finishedAt = Date.now();
       store.saveJob(job);
       await deliverVideo(job);
@@ -102,7 +108,7 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
     const caption = [
       `✅ <b>Vidéo prête</b> — ${esc(model?.name ?? job.modelId)}`,
       `📝 <i>${esc(truncate(job.prompt, 700))}</i>`,
-      `💰 ~${formatUsd(job.estimateUsd)}${elapsed != null ? ` · ⏱ ${elapsed}s` : ""}`,
+      `💰 ${job.actualUsd != null ? `${formatUsd(job.actualUsd)} (réel)` : `~${formatUsd(job.estimateUsd)}`}${elapsed != null ? ` · ⏱ ${elapsed}s` : ""}`,
     ].join("\n");
 
     const videoUrl = job.videoUrl!;
@@ -172,7 +178,7 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
     job.error = reason;
     job.finishedAt = Date.now();
     store.saveJob(job);
-    const text = `❌ <b>Échec de la génération</b> (Job ${job.id})\n${esc(truncate(reason, 500))}\n\nEn général fal.ai ne facture pas les requêtes en erreur.`;
+    const text = `❌ <b>Échec de la génération</b> (Job ${job.id})\n${esc(truncate(reason, 500))}\n\nEn général le fournisseur ne facture pas les requêtes en erreur.`;
     pushEvent(store, job.chatId, `Le job ${job.id} a échoué : ${reason}`);
     if (job.statusMessageId) {
       try {

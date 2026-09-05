@@ -22,6 +22,8 @@ export interface VideoResult {
   /** Prompt après réécriture par le modèle, si communiqué. */
   expandedPrompt?: string | null;
   videoUrl: string;
+  /** Coût réel en USD si le fournisseur le communique (TopView : crédits débités). */
+  actualUsd?: number | null;
   raw: unknown;
 }
 

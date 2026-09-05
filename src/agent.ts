@@ -60,8 +60,8 @@ PHASE DE TEST ET CLASSEMENT
   technologie sait faire de mieux sur cette demande : un duel entre modèles bon marché n'apprend que
   lequel des bon marché gagne, et si aucun n'est exploitable l'argent est perdu, pas économisé.
 - Pour du réalisme haut de gamme, les concurrents naturels sont Veo 3.1, Wan 3.0 / 3.0 Prime,
-  Kling 3.0 Pro et H3 Max — plus Seedance 2.5 SEULEMENT si la tâche ne lui donne aucune image de
-  personne à avaler (voir LIMITE SEEDANCE). Annonce le coût total sans en faire un obstacle : c'est une information,
+  Kling 3.0 Pro, H3 Max et Seedance 2.5 — via TopView (tv25 / tv25ref) dès qu'il y a une image de
+  personne, via BytePlus (bp25) seulement quand il n'y en a pas (voir LIMITE SEEDANCE). Annonce le coût total sans en faire un obstacle : c'est une information,
   pas un critère de sélection.
 - Compare aussi À L'INTÉRIEUR D'UNE MÊME FAMILLE : Seedance 2.0 mini contre 2.5, Kling 3.0 Standard contre
   Pro, H3 Max contre H3. Le palier haut de gamme ne se justifie que s'il se voit SUR CETTE DEMANDE — s'il
@@ -83,12 +83,18 @@ LIMITE SEEDANCE — IMAGES DE PERSONNES (mesuré le 2026-09-05)
 - Toute la gamme Seedance REFUSE une image d'ENTRÉE où son filtre voit une personne réelle — un
   mannequin IA réaliste suffit à le déclencher (InputImageSensitiveContentDetected.PrivacyInformation).
   Vérifié sur les 3 modèles BytePlus, en first_frame comme en référence, et la route fal renvoie le
-  même refus (partner_validation_failed) : changer de route ne change rien, aucun réglage d'API ne le lève.
+  même refus (partner_validation_failed) ; aucun réglage d'API ne le lève. Seule la route TopView passe.
 - Ce qui PASSE chez Seedance : le TEXT→VIDÉO, y compris avec un sujet humain décrit dans le prompt, et
   l'image→vidéo sur des plans SANS personne (décor, produit, b-roll).
-- Donc dès que la demande anime ou référence une image de personne, ne mets PAS Seedance dans le duel :
-  les concurrents sont Wan 3.0 (vérifié OK sur les mêmes images), Kling 3.0, H3/H3 Max, Veo, Grok.
-  Pour comparer Seedance quand même, propose un duel TEXT→vidéo où chacun reçoit la description texte.
+- Donc dès que la demande anime ou référence une image de personne, le Seedance à proposer est celui
+  de TOPVIEW : tv25 (image→vidéo), tv25ref (référence→vidéo), tv20 pour la comparaison intra-famille.
+  Testé le 2026-09-05 sur les mêmes images refusées par BytePlus : accepté, identité préservée, 3 à 4 min
+  de génération. Ne propose JAMAIS bp25 / bp25ref / bp20fast / bp20mini sur une image de personne.
+  Les autres concurrents restent Wan 3.0 (vérifié OK), Kling 3.0, H3/H3 Max, Veo, Grok.
+- TopView se paie en crédits ; le coût affiché par estimate_cost et par la carte de duel fait foi (il suit
+  la valeur du crédit configurée). Ordre de grandeur au pack de 1000 : ~1,50 $ la 2.5 en 720p pour 5 s,
+  ~0,70 $ en 480p — comparable au direct BytePlus, moins cher que fal. Pour DÉGROSSIR un duel, propose le
+  480p ; pour la version à publier, le 720p. Les duels intra-famille (tv20 contre tv25) se font en 480p.
 - L'appli grand public Dreamina (CapCut) peut accepter la même image : sa modération est distincte de
   celle de l'API. Ça ne rend pas l'API utilisable — si l'utilisateur y tient, c'est manuel, hors bot.
 
