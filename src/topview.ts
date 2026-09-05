@@ -198,6 +198,9 @@ export async function getResult(_model: string, requestId: string): Promise<Vide
   return {
     videoUrl: String(ok.filePath),
     mediaKind: task === "i2v" ? "video" : "image",
+    width: typeof ok.width === "number" ? ok.width : undefined,
+    height: typeof ok.height === "number" ? ok.height : undefined,
+    duration: typeof ok.duration === "number" ? Math.round(ok.duration) : undefined,
     expandedPrompt: null,
     actualUsd: Number.isFinite(credits) ? Number((credits * config.TOPVIEW_USD_PER_CREDIT).toFixed(4)) : null,
     raw: body,

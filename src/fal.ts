@@ -24,6 +24,12 @@ export interface VideoResult {
   videoUrl: string;
   /** Image ou vidéo : déduit de la réponse, sert à choisir sendPhoto ou sendVideo. */
   mediaKind?: "image" | "video";
+  /** Dimensions, durée (s) et taille quand le fournisseur les communique :
+   *  Telegram en a besoin pour afficher la vidéo au bon format. */
+  width?: number;
+  height?: number;
+  duration?: number;
+  fileSize?: number;
   /** Coût réel en USD si le fournisseur le communique (TopView : crédits débités). */
   actualUsd?: number | null;
   raw: unknown;
@@ -31,17 +37,28 @@ export interface VideoResult {
 
 export async function getResult(endpoint: string, requestId: string): Promise<VideoResult> {
   const res = await fal.queue.result(endpoint, { requestId });
+  type Media = { url?: string; width?: number; height?: number; duration?: number; file_size?: number };
   const data = res.data as
-    | { video?: { url?: string }; videos?: Array<{ url?: string }>; images?: Array<{ url?: string }>; expanded_prompt?: string | null }
+    | { video?: Media; videos?: Media[]; images?: Media[]; expanded_prompt?: string | null }
     | undefined;
-  const url = data?.video?.url ?? data?.videos?.[0]?.url ?? data?.images?.[0]?.url;
+  const media = data?.video ?? data?.videos?.[0] ?? data?.images?.[0];
+  const url = media?.url;
   if (!url) {
     throw new Error(`Réponse fal sans URL vidéo : ${JSON.stringify(res.data).slice(0, 300)}`);
   }
   // Plusieurs modèles réécrivent le prompt avant génération et renvoient le
   // texte réellement utilisé. C'est la seule façon de voir ce que le
   // réécrivain a fait d'une formulation réaliste travaillée.
-  return { videoUrl: url, mediaKind: data?.images ? "image" : "video", expandedPrompt: data?.expanded_prompt ?? null, raw: res.data };
+  return {
+    videoUrl: url,
+    mediaKind: data?.images ? "image" : "video",
+    width: media?.width,
+    height: media?.height,
+    duration: media?.duration != null ? Math.round(Number(media.duration)) : undefined,
+    fileSize: media?.file_size,
+    expandedPrompt: data?.expanded_prompt ?? null,
+    raw: res.data,
+  };
 }
 
 export async function cancelRequest(endpoint: string, requestId: string): Promise<void> {

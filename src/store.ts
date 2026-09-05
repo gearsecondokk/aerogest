@@ -71,6 +71,11 @@ export interface Job {
   provider?: "fal" | "byteplus" | "topview";
   /** Image ou vidéo (défaut vidéo, pour les jobs anciens). */
   mediaKind?: "image" | "video";
+  /** Métadonnées du fichier produit, pour l'envoi Telegram au bon format. */
+  width?: number;
+  height?: number;
+  durationSec?: number;
+  fileSize?: number;
   /** Prompt après réécriture par le modèle, si communiqué. */
   expandedPrompt?: string | null;
   /** Coût réellement facturé quand le fournisseur le communique (TopView). */

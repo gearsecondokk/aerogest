@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import { describeError, getResult, getStatus } from "./provider.js";
 import { getModel } from "./models.js";
 import { formatUsd } from "./pricing.js";
+import { sendVideoSmart } from "./media.js";
 import type { Job, Store } from "./store.js";
 import { esc, truncate } from "./text.js";
 
@@ -69,6 +70,10 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
       const result = await getResult(job.provider ?? "fal", job.endpoint, job.requestId);
       job.status = "done";
       job.videoUrl = result.videoUrl;
+      job.width = result.width;
+      job.height = result.height;
+      job.durationSec = result.duration;
+      job.fileSize = result.fileSize;
       job.expandedPrompt = result.expandedPrompt ?? null;
       if (result.actualUsd != null) {
         // Coût réel communiqué par le fournisseur (TopView renvoie les crédits
@@ -114,19 +119,18 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
     const videoUrl = job.videoUrl!;
     if (job.mediaKind === "image") {
       await deliverImage(job, videoUrl, caption);
-    } else try {
-      // Telegram télécharge lui-même les fichiers < 20 Mo
-      await bot.api.sendVideo(job.chatId, videoUrl, { caption, parse_mode: "HTML", supports_streaming: true });
-    } catch (err1) {
-      console.warn(`sendVideo par URL a échoué (job ${job.id}), tentative en upload :`, err1 instanceof Error ? err1.message : err1);
+    } else {
       try {
-        await bot.api.sendVideo(job.chatId, new InputFile(new URL(videoUrl), `video-${job.id}.mp4`), {
+        await sendVideoSmart(
+          bot.api,
+          job.chatId,
+          videoUrl,
           caption,
-          parse_mode: "HTML",
-          supports_streaming: true,
-        });
-      } catch (err2) {
-        console.error(`Upload de la vidéo impossible (job ${job.id}) :`, err2);
+          { width: job.width, height: job.height, duration: job.durationSec, fileSize: job.fileSize },
+          `video-${job.id}.mp4`,
+        );
+      } catch (err) {
+        console.error(`Envoi de la vidéo impossible (job ${job.id}) :`, err);
         await bot.api.sendMessage(job.chatId, `${caption}\n\n📎 Télécharge-la ici : ${videoUrl}`, { parse_mode: "HTML" });
       }
     }
