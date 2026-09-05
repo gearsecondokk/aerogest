@@ -4,9 +4,9 @@ import { describeClaudeError, runAgentTurn, type AgentHooks } from "./agent.js";
 import { config } from "./config.js";
 import { cancelRequest, describeFalError, uploadImage } from "./fal.js";
 import { submitVideo } from "./provider.js";
-import { MODELS, describeOptions, getModel } from "./models.js";
-import { formatUsd } from "./pricing.js";
-import type { HistoryMessage, Job, PendingGeneration, Session, Store } from "./store.js";
+import { MODELS, defaultOptions, describeOptions, getModel } from "./models.js";
+import { estimateCost, formatUsd } from "./pricing.js";
+import type { HistoryMessage, Job, PendingDuel, PendingGeneration, Session, Store } from "./store.js";
 import { downloadImageFromMessage } from "./telegram-files.js";
 import { esc, truncate } from "./text.js";
 
@@ -82,6 +82,19 @@ export function createBot(store: Store): Bot {
     store.resetSession(ctx.chat.id);
     busy.delete(ctx.chat.id);
     await ctx.reply("🧹 Nouvelle conversation. Envoie-moi une image pour commencer.");
+  });
+
+  bot.command("stats", async (ctx) => {
+    const all = store.ratings();
+    if (Object.keys(all).length === 0) {
+      await ctx.reply("Aucun verdict enregistré. Lance un duel (⚔️) pour commencer à construire le classement.");
+      return;
+    }
+    const blocks = Object.entries(all).map(([kind, rows]) => {
+      const lines = rows.map((x, i) => `${i + 1}. ${getModel(x.modelId)?.name ?? x.modelId} — ${x.wins}/${x.runs} (${Math.round(x.rate * 100)} %)`);
+      return `<b>${esc(kind)}</b>\n${esc(lines.join("\n"))}`;
+    });
+    await ctx.reply(`📊 <b>Classement interne</b>\n\n${blocks.join("\n\n")}`, { parse_mode: "HTML" });
   });
 
   bot.command("models", async (ctx) => {
@@ -191,6 +204,49 @@ export function createBot(store: Store): Bot {
     await launchJob(ctx, session, pending);
   });
 
+  bot.callbackQuery("duel:go", async (ctx) => {
+    const session = store.getSession(ctx.chat!.id);
+    const duel = session.pendingDuel;
+    if (!duel || !session.imageUrl) {
+      await ctx.answerCallbackQuery({ text: "Ce duel n'est plus valable." });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    session.pendingDuel = undefined;
+    store.saveSession(session);
+    await launchDuel(ctx, session, duel);
+  });
+
+  bot.callbackQuery(/^duel:win:([^:]+):(.+)$/, async (ctx) => {
+    const duelId = ctx.match[1]!;
+    const winnerId = ctx.match[2]!;
+    const jobs = store.jobsForDuel(duelId);
+    if (jobs.length === 0) {
+      await ctx.answerCallbackQuery({ text: "Duel introuvable." });
+      return;
+    }
+    const kind = jobs[0]!.taskKind ?? "inconnu";
+    store.recordDuelWinner(kind, winnerId, jobs.map((j) => j.modelId));
+    await ctx.answerCallbackQuery({ text: "Verdict enregistré 🏆" });
+    try {
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+    } catch { /* déjà modifié */ }
+    const board = store.ratings(kind)[kind] ?? [];
+    const standing = board
+      .map((x, i) => `${i + 1}. ${getModel(x.modelId)?.name ?? x.modelId} — ${x.wins}/${x.runs} (${Math.round(x.rate * 100)} %)`)
+      .join("\n");
+    await ctx.reply(
+      `🏆 <b>${esc(getModel(winnerId)?.name ?? winnerId)}</b> retenu pour <code>${esc(kind)}</code>.\n\n<b>Classement</b>\n${esc(standing)}`,
+      { parse_mode: "HTML" },
+    );
+    const session = store.getSession(ctx.chat!.id);
+    pushEvent(
+      store,
+      session.chatId,
+      `[Événement] L'utilisateur a désigné ${getModel(winnerId)?.name ?? winnerId} comme meilleur sur la tâche « ${kind} ». Classement mis à jour. Tiens-en compte pour tes prochaines recommandations.`,
+    );
+  });
+
   bot.callbackQuery("go:no", async (ctx) => {
     const session = store.getSession(ctx.chat!.id);
     if (!session.pending) {
@@ -236,6 +292,7 @@ export function createBot(store: Store): Bot {
   // ---- Helpers -------------------------------------------------------------
 
   const hooks: AgentHooks = {
+    showDuelConfirmation: async (session, duel) => showDuelCard(session, duel),
     showConfirmation: async (session, pending) => {
       const model = getModel(pending.modelId)!;
       const lines = [
@@ -280,6 +337,94 @@ export function createBot(store: Store): Bot {
       clearInterval(typing);
       busy.delete(chatId);
     }
+  }
+
+  /* ── Duels ─────────────────────────────────────────────────────────
+   * Plusieurs modèles sur la même tâche, l'utilisateur tranche, le classement
+   * se construit sur ses verdicts. Aucun modèle n'est meilleur dans l'absolu :
+   * ça dépend du type de demande et de son goût à lui. */
+
+  async function showDuelCard(session: Session, duel: PendingDuel): Promise<number | undefined> {
+    const lines = duel.modelIds.map((id) => {
+      const m = getModel(id);
+      return `• <b>${esc(m?.name ?? id)}</b>`;
+    });
+    const msg = await bot.api.sendMessage(
+      session.chatId,
+      `⚔️ <b>Duel — ${esc(duel.modelIds.length.toString())} modèles sur la même tâche</b>\n\n${lines.join("\n")}\n\n` +
+        `🏷 Type : <code>${esc(duel.taskKind)}</code>\n` +
+        `💰 <b>Coût total estimé : ${formatUsd(duel.totalUsd)}</b>\n\n` +
+        `Les vidéos arriveront une par une. Tu désigneras la meilleure à la fin.\n\n<b>On lance ?</b>`,
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard().text("✅ Lancer le duel", "duel:go").text("❌ Annuler", "go:no"),
+      },
+    );
+    return msg.message_id;
+  }
+
+  async function launchDuel(ctx: Context, session: Session, duel: PendingDuel): Promise<void> {
+    const duelId = randomUUID().slice(0, 8);
+    try {
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+    } catch { /* déjà modifié */ }
+
+    const launched: string[] = [];
+    for (const modelId of duel.modelIds) {
+      const model = getModel(modelId);
+      if (!model) continue;
+      const opts = { ...defaultOptions(model), ...duel.options };
+      const input = model.buildInput({
+        imageUrl: session.imageUrl!,
+        imageUrls: session.imageUrls ?? [session.imageUrl!],
+        prompt: duel.prompt,
+        negativePrompt: duel.negativePrompt,
+        opts,
+      });
+      let requestId: string;
+      try {
+        requestId = await submitVideo(model.provider ?? "fal", model.endpoint, input);
+      } catch (err) {
+        // Un concurrent qui tombe ne doit pas faire échouer tout le duel.
+        await ctx.reply(`⚠️ ${esc(model.name)} n'a pas pu être lancé : ${esc(describeFalError(err))}`, { parse_mode: "HTML" });
+        continue;
+      }
+      const est = await estimateCost(model, opts);
+      const job: Job = {
+        id: randomUUID().slice(0, 8),
+        chatId: session.chatId,
+        userId: ctx.from!.id,
+        requestId,
+        modelId: model.id,
+        endpoint: model.endpoint,
+        provider: model.provider ?? "fal",
+        input,
+        prompt: duel.prompt,
+        estimateUsd: Number((est.liveUsd ?? est.usd).toFixed(4)),
+        status: "queued",
+        duelId,
+        taskKind: duel.taskKind,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      store.addJob(job);
+      store.addSpend(job.estimateUsd);
+      launched.push(model.name);
+    }
+
+    if (launched.length === 0) {
+      await ctx.reply("❌ Aucun modèle n'a pu être lancé.");
+      return;
+    }
+    await ctx.reply(
+      `⚔️ <b>Duel lancé</b> (${launched.length} modèles)\n⏳ Les vidéos arrivent au fur et à mesure. Je te demanderai laquelle est la meilleure quand tout sera prêt.`,
+      { parse_mode: "HTML" },
+    );
+    pushEvent(
+      store,
+      session.chatId,
+      `[Événement] Duel ${duelId} lancé sur ${launched.join(", ")} (tâche « ${duel.taskKind} »). L'utilisateur désignera le gagnant à la fin.`,
+    );
   }
 
   async function launchJob(ctx: Context, session: Session, pending: PendingGeneration): Promise<void> {

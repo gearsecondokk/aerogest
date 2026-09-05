@@ -18,6 +18,24 @@ export interface PendingGeneration {
   createdAt: number;
 }
 
+/** Duel proposé, en attente du ✅ de l'utilisateur. */
+export interface PendingDuel {
+  modelIds: string[];
+  options: Options;
+  prompt: string;
+  negativePrompt: string | null;
+  taskKind: string;
+  totalUsd: number;
+  messageId?: number;
+  createdAt: number;
+}
+
+/** Bilan par modèle et par type de tâche, alimenté par les verdicts. */
+export interface Rating {
+  wins: number;
+  runs: number;
+}
+
 export interface Session {
   chatId: number;
   /** Conversation avec Claude (messages user/assistant + résultats d'outils) */
@@ -29,12 +47,20 @@ export interface Session {
   imageUrls?: string[];
   imageFileId?: string;
   pending?: PendingGeneration;
+  pendingDuel?: PendingDuel;
   updatedAt: number;
 }
 
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
 export interface Job {
+  /** Duel auquel ce job appartient : plusieurs modèles lancés sur la MÊME
+   *  tâche, pour comparer. Vide = génération isolée. */
+  duelId?: string;
+  /** Empêche de redemander le verdict si un autre job du duel finit après. */
+  verdictAsked?: boolean;
+  /** Nature de la tâche, clé du classement : i2v, r2v… */
+  taskKind?: string;
   /** Fournisseur ayant exécuté ce job (défaut fal, pour les jobs anciens). */
   provider?: "fal" | "byteplus";
   /** Prompt après réécriture par le modèle, si communiqué. */
@@ -59,6 +85,8 @@ export interface Job {
 }
 
 interface StateFile {
+  /** taskKind → modelId → {wins, runs} */
+  ratings?: Record<string, Record<string, Rating>>;
   sessions: Record<string, Session>;
   jobs: Record<string, Job>;
   /** Dépenses estimées par jour (YYYY-MM-DD → USD) */
@@ -180,4 +208,44 @@ export class Store {
       console.error("Erreur d'écriture du state :", err);
     }
   }
+
+  /* ── Duels et classement ───────────────────────────────────────────
+   * On lance plusieurs modèles sur la MÊME tâche, l'utilisateur désigne le
+   * meilleur, et on accumule un classement par type de tâche. Le but n'est
+   * pas de désigner un « meilleur modèle » dans l'absolu — ça n'existe pas —
+   * mais de savoir lequel gagne SUR CE GENRE DE DEMANDE, avec ses propres
+   * critères à lui. */
+
+  jobsForDuel(duelId: string): Job[] {
+    return Object.values(this.data.jobs).filter((j) => j.duelId === duelId);
+  }
+
+  /** Enregistre le verdict : un gagnant, et tous les participants comptés. */
+  recordDuelWinner(taskKind: string, winnerId: string, participantIds: string[]): void {
+    this.data.ratings ??= {};
+    const board = (this.data.ratings[taskKind] ??= {});
+    for (const id of participantIds) {
+      board[id] ??= { wins: 0, runs: 0 };
+      board[id].runs += 1;
+    }
+    board[winnerId] ??= { wins: 0, runs: 0 };
+    board[winnerId].wins += 1;
+    this.scheduleWrite();
+  }
+
+  /** Classement d'un type de tâche, ou de tous, trié par taux de victoire. */
+  ratings(taskKind?: string): Record<string, Array<{ modelId: string; wins: number; runs: number; rate: number }>> {
+    const all = this.data.ratings ?? {};
+    const kinds = taskKind ? [taskKind] : Object.keys(all);
+    const out: Record<string, Array<{ modelId: string; wins: number; runs: number; rate: number }>> = {};
+    for (const k of kinds) {
+      const board = all[k];
+      if (!board) continue;
+      out[k] = Object.entries(board)
+        .map(([modelId, r]) => ({ modelId, wins: r.wins, runs: r.runs, rate: r.runs ? r.wins / r.runs : 0 }))
+        .sort((a, b) => b.rate - a.rate || b.runs - a.runs);
+    }
+    return out;
+  }
+
 }

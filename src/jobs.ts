@@ -73,8 +73,10 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
       job.finishedAt = Date.now();
       store.saveJob(job);
       await deliverVideo(job);
+      await askDuelVerdict(job).catch((e) => console.warn("verdict duel :", e));
     } catch (err) {
       await failJob(job, describeError(job.provider ?? "fal", err));
+      await askDuelVerdict(job).catch(() => {});
     }
   }
 
@@ -135,6 +137,33 @@ export function startJobPoller(bot: Bot, store: Store): () => void {
         (job.expandedPrompt
           ? `\nLe modèle a RÉÉCRIT le prompt avant génération. Texte réellement utilisé : « ${job.expandedPrompt.slice(0, 600)} ». Si le rendu s'éloigne du réalisme demandé, c'est probablement là que ça s'est joué — signale-le et propose de relancer avec la réécriture désactivée.`
           : ""),
+    );
+  }
+
+  /**
+   * Quand tous les concurrents d'un duel ont rendu leur copie, on demande le
+   * verdict. Un modèle en échec ne bloque pas : il est écarté du choix mais
+   * reste compté comme participant — planter, c'est perdre.
+   */
+  async function askDuelVerdict(job: Job): Promise<void> {
+    if (!job.duelId) return;
+    const siblings = store.jobsForDuel(job.duelId);
+    if (siblings.some((j) => j.status !== "done" && j.status !== "failed")) return;
+    const finished = siblings.filter((j) => j.status === "done");
+    if (finished.length < 2) return;
+    if (siblings.some((j) => j.verdictAsked)) return;
+    for (const j of siblings) { j.verdictAsked = true; store.saveJob(j); }
+
+    const kb = new InlineKeyboard();
+    for (const j of finished) {
+      kb.text(`🏆 ${getModel(j.modelId)?.name ?? j.modelId}`, `duel:win:${job.duelId}:${j.modelId}`).row();
+    }
+    const total = siblings.reduce((a, j) => a + j.estimateUsd, 0);
+    await bot.api.sendMessage(
+      job.chatId,
+      `⚔️ <b>Duel terminé</b> — ${finished.length} vidéos sur la même tâche (<code>${esc(job.taskKind ?? "?")}</code>, ${formatUsd(total)}).\n\n` +
+        `<b>Laquelle est la meilleure ?</b> Ta réponse alimente le classement : je m'en servirai pour te conseiller la prochaine fois.`,
+      { parse_mode: "HTML", reply_markup: kb },
     );
   }
 

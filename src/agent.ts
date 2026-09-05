@@ -5,7 +5,7 @@ import { config } from "./config.js";
 import { cancelRequest, describeFalError } from "./fal.js";
 import { MODELS, defaultOptions, getModel, type Options, type OptionValue, type VideoModel } from "./models.js";
 import { estimateCost, formatUsd } from "./pricing.js";
-import type { HistoryMessage, PendingGeneration, Session, Store } from "./store.js";
+import type { HistoryMessage, PendingDuel, PendingGeneration, Session, Store } from "./store.js";
 import { REALISM_PLAYBOOK, MODEL_PLAYBOOK } from "./prompting.js";
 
 const client = new Anthropic(config.ANTHROPIC_API_KEY ? { apiKey: config.ANTHROPIC_API_KEY } : {});
@@ -15,6 +15,7 @@ let fallbacksSupported = true;
 
 /** Ce que le bot Telegram doit savoir faire pour l'agent. */
 export interface AgentHooks {
+  showDuelConfirmation(session: Session, duel: PendingDuel): Promise<number | undefined>;
   /** Affiche la carte de confirmation (coût + boutons ✅/❌) et renvoie l'id du message. */
   showConfirmation: (session: Session, pending: PendingGeneration) => Promise<number>;
 }
@@ -47,6 +48,20 @@ DÉROULÉ TYPIQUE
 3. Rédige le prompt vidéo EN ANGLAIS (30 à 120 mots sauf indication du guide du modèle), en appliquant la DOCTRINE DU RÉALISME et la structure propre au modèle choisi. En image→vidéo, ne redécris PAS le sujet en détail (le modèle voit l'image) : décris ce qui bouge, comment, et ce qui reste stable. Ajoute systématiquement les marqueurs de texture (peau, cheveux, caméra téléphone) et un negative_prompt quand le modèle le supporte. Montre le prompt à l'utilisateur et explique tes choix en 1-2 phrases en français.
 4. Quand l'utilisateur est d'accord (ou qu'il te dit clairement de lancer), appelle propose_generation avec le model_id, les options, le prompt (et negative_prompt si utile). Cela affiche à l'utilisateur une carte avec le coût exact et des boutons ✅ / ❌. Dis-lui ensuite d'appuyer sur ✅ pour lancer.
 5. La génération ne démarre QUE si l'utilisateur appuie sur ✅. Ne prétends jamais qu'une vidéo est lancée ou prête tant qu'un message [Événement] ne le confirme pas.
+
+PHASE DE TEST ET CLASSEMENT
+- On est en phase de comparaison : aucun modèle n'est « le meilleur » dans l'absolu, ça dépend du type de
+  demande et du goût de l'utilisateur. Par défaut, propose un DUEL (propose_duel) plutôt qu'une génération
+  isolée : 2 à 4 modèles comparables sur la MÊME tâche, même prompt, mêmes options.
+- Choisis des concurrents pertinents et à budget maîtrisé : ne mets pas Veo 3.1 à 2 $ face à Seedance 2.0
+  mini à 0,15 $ sans le signaler. Pour dégrossir, un duel de modèles bon marché suffit.
+- Renseigne task_kind avec le type de demande : 'i2v' (image de départ), 'r2v' (référence), et précise si
+  c'est utile ('i2v-portrait-realiste', 'r2v-personnage-recurrent'). C'est la clé du classement.
+- Consulte model_ratings AVANT de recommander : les verdicts passés de l'utilisateur priment sur les
+  caractéristiques annoncées. S'il a déjà tranché sur ce type de tâche, dis-le et propose le vainqueur.
+- Quand un verdict tombe, ne le commente pas longuement : note ce qui a plu, et propose la suite.
+- Quand le classement est net sur un type de tâche (plusieurs duels, un vainqueur récurrent), propose de
+  passer en génération simple sur ce modèle plutôt que de continuer à payer des duels.
 
 MODE RÉFÉRENCE→VIDÉO (modèles marqués RÉFÉRENCE dans le catalogue)
 - Ces modèles ne prennent PAS une image à animer : ils prennent 2 à 4 photos du MÊME sujet pour tenir
@@ -185,6 +200,92 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
     },
   });
 
+
+  /* ── Duel : plusieurs modèles sur la même tâche ─────────────────────
+   * Aucun modèle n'est « le meilleur » dans l'absolu : ça dépend du type de
+   * demande et des goûts de l'utilisateur. On les met en concurrence, il
+   * tranche, et le classement se construit sur SES verdicts. */
+  const proposeDuelTool = betaZodTool({
+    name: "propose_duel",
+    description:
+      "Propose de lancer PLUSIEURS modèles sur la MÊME tâche pour les comparer. À utiliser en phase de test, " +
+      "ou dès que l'utilisateur demande quel modèle est le meilleur. Une fois les vidéos prêtes, il désignera " +
+      "le gagnant et le classement interne se mettra à jour. Affiche une carte avec le coût TOTAL et des boutons.",
+    inputSchema: z.object({
+      model_ids: z.array(z.string()).min(2).max(4).describe("2 à 4 model_id du catalogue, à conditions comparables"),
+      options: OptionsSchema.optional().describe("Options communes à tous (durée, résolution…)"),
+      prompt: z.string().min(3).describe("Le MÊME prompt pour tous, en anglais"),
+      negative_prompt: z.string().nullable().optional(),
+      task_kind: z
+        .string()
+        .describe("Type de tâche, clé du classement : 'i2v' (image de départ), 'r2v' (référence), ou plus précis comme 'i2v-portrait-realiste'"),
+    }),
+    run: async ({ model_ids, options, prompt, negative_prompt, task_kind }) => {
+      if (!session.imageUrl) return "Erreur : aucune image dans la conversation. Demande une image à l'utilisateur.";
+      const refCount = (session.imageUrls ?? [session.imageUrl]).length;
+      const models = [];
+      for (const id of model_ids) {
+        const m = getModel(id);
+        if (!m) return `Erreur : model_id "${id}" inconnu.`;
+        if (m.needsReferences && refCount < 2) {
+          return `Erreur : ${m.name} exige au moins 2 images de référence (${refCount} disponible). Retire-le du duel ou demande d'autres images.`;
+        }
+        models.push(m);
+      }
+      let total = 0;
+      const lines: string[] = [];
+      for (const m of models) {
+        const norm = normalizeOptions(m, options ?? {});
+        if ("error" in norm) return `Erreur sur ${m.name} : ${norm.error}`;
+        const est = await estimateCost(m, norm.options);
+        total += est.liveUsd ?? est.usd;
+        lines.push(`${m.name} ${formatUsd(est.liveUsd ?? est.usd)}`);
+      }
+      if (total > config.MAX_COST_PER_VIDEO_USD) {
+        return `Refusé : le duel coûterait ${formatUsd(total)} au total, au-dessus du plafond par génération (${formatUsd(config.MAX_COST_PER_VIDEO_USD)}). Retire un modèle, raccourcis, ou baisse la résolution.`;
+      }
+      if (config.DAILY_BUDGET_USD != null && store.spentToday() + total > config.DAILY_BUDGET_USD) {
+        return `Refusé : budget journalier dépassé (déjà ${formatUsd(store.spentToday())}).`;
+      }
+      const duel: PendingDuel = {
+        modelIds: models.map((m) => m.id),
+        options: options ? (normalizeOptions(models[0]!, options) as { options: Options }).options : {},
+        prompt: prompt.trim(),
+        negativePrompt: negative_prompt?.trim() || null,
+        taskKind: task_kind,
+        totalUsd: Number(total.toFixed(4)),
+        createdAt: Date.now(),
+      };
+      duel.messageId = await hooks.showDuelConfirmation(session, duel);
+      session.pendingDuel = duel;
+      session.pending = undefined;
+      store.saveSession(session);
+      return `Duel proposé : ${lines.join(" · ")} — total ${formatUsd(total)}. L'utilisateur doit appuyer sur ✅. Réponds brièvement et attends.`;
+    },
+  });
+
+  const ratingsTool = betaZodTool({
+    name: "model_ratings",
+    description:
+      "Classement interne des modèles, construit sur les verdicts passés de l'utilisateur. À consulter AVANT " +
+      "de recommander un modèle : ses préférences réelles priment sur les caractéristiques annoncées.",
+    inputSchema: z.object({
+      task_kind: z.string().nullable().optional().describe("Filtrer sur un type de tâche, ou null pour tout voir"),
+    }),
+    run: async ({ task_kind }) => {
+      const r = store.ratings(task_kind ?? undefined);
+      if (Object.keys(r).length === 0) return "Aucun verdict enregistré pour l'instant : lance un duel pour commencer à construire le classement.";
+      const out: string[] = [];
+      for (const [kind, rows] of Object.entries(r)) {
+        out.push(
+          `${kind} : ` +
+            rows.map((x) => `${getModel(x.modelId)?.name ?? x.modelId} ${x.wins}/${x.runs} (${Math.round(x.rate * 100)} %)`).join(" · "),
+        );
+      }
+      return out.join("\n");
+    },
+  });
+
   const listJobsTool = betaZodTool({
     name: "list_jobs",
     description: "Liste les dernières générations de cette conversation (en cours, terminées, échouées) avec leur statut.",
@@ -227,7 +328,9 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
     },
   });
 
-  return [estimateCostTool, proposeGenerationTool, listJobsTool, cancelJobTool];
+  return [proposeDuelTool,
+    ratingsTool,
+    estimateCostTool, proposeGenerationTool, listJobsTool, cancelJobTool];
 }
 
 // ---------------------------------------------------------------------------
