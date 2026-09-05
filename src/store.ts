@@ -28,6 +28,9 @@ export interface PendingDuel {
   prompt: string;
   negativePrompt: string | null;
   taskKind: string;
+  /** Des images sont empilées dans la session : la carte peut alors
+   *  signaler les modèles qui refuseront une photo de personne. */
+  withImages?: boolean;
   totalUsd: number;
   messageId?: number;
   createdAt: number;

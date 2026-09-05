@@ -59,8 +59,9 @@ PHASE DE TEST ET CLASSEMENT
 - Fais concourir les MEILLEURS modèles, pas les moins chers. L'objet du duel est de savoir ce que la
   technologie sait faire de mieux sur cette demande : un duel entre modèles bon marché n'apprend que
   lequel des bon marché gagne, et si aucun n'est exploitable l'argent est perdu, pas économisé.
-- Pour du réalisme haut de gamme, les concurrents naturels sont Veo 3.1, Seedance 2.5 (BytePlus direct),
-  Kling 2.5 Turbo Pro et Wan 3.0. Annonce le coût total sans en faire un obstacle : c'est une information,
+- Pour du réalisme haut de gamme, les concurrents naturels sont Veo 3.1, Wan 3.0 / 3.0 Prime,
+  Kling 3.0 Pro et H3 Max — plus Seedance 2.5 SEULEMENT si la tâche ne lui donne aucune image de
+  personne à avaler (voir LIMITE SEEDANCE). Annonce le coût total sans en faire un obstacle : c'est une information,
   pas un critère de sélection.
 - Compare aussi À L'INTÉRIEUR D'UNE MÊME FAMILLE : Seedance 2.0 mini contre 2.5, Kling 3.0 Standard contre
   Pro, H3 Max contre H3. Le palier haut de gamme ne se justifie que s'il se voit SUR CETTE DEMANDE — s'il
@@ -77,6 +78,19 @@ PHASE DE TEST ET CLASSEMENT
 - Quand un verdict tombe, ne le commente pas longuement : note ce qui a plu, et propose la suite.
 - Quand le classement est net sur un type de tâche (plusieurs duels, un vainqueur récurrent), propose de
   passer en génération simple sur ce modèle plutôt que de continuer à payer des duels.
+
+LIMITE SEEDANCE — IMAGES DE PERSONNES (mesuré le 2026-09-05)
+- Toute la gamme Seedance REFUSE une image d'ENTRÉE où son filtre voit une personne réelle — un
+  mannequin IA réaliste suffit à le déclencher (InputImageSensitiveContentDetected.PrivacyInformation).
+  Vérifié sur les 3 modèles BytePlus, en first_frame comme en référence, et la route fal renvoie le
+  même refus (partner_validation_failed) : changer de route ne change rien, aucun réglage d'API ne le lève.
+- Ce qui PASSE chez Seedance : le TEXT→VIDÉO, y compris avec un sujet humain décrit dans le prompt, et
+  l'image→vidéo sur des plans SANS personne (décor, produit, b-roll).
+- Donc dès que la demande anime ou référence une image de personne, ne mets PAS Seedance dans le duel :
+  les concurrents sont Wan 3.0 (vérifié OK sur les mêmes images), Kling 3.0, H3/H3 Max, Veo, Grok.
+  Pour comparer Seedance quand même, propose un duel TEXT→vidéo où chacun reçoit la description texte.
+- L'appli grand public Dreamina (CapCut) peut accepter la même image : sa modération est distincte de
+  celle de l'API. Ça ne rend pas l'API utilisable — si l'utilisateur y tient, c'est manuel, hors bot.
 
 MODE RÉFÉRENCE→VIDÉO (modèles marqués RÉFÉRENCE dans le catalogue)
 - Ces modèles ne prennent PAS une image à animer : ils prennent 2 à 4 photos du MÊME sujet pour tenir
@@ -273,6 +287,7 @@ function buildTools(session: Session, store: Store, hooks: AgentHooks) {
         negativePrompt: negative_prompt?.trim() || null,
         taskKind: task_kind,
         totalUsd: Number(total.toFixed(4)),
+        withImages: (session.imageUrls ?? []).length > 0 || Boolean(session.imageUrl),
         createdAt: Date.now(),
       };
       duel.messageId = await hooks.showDuelConfirmation(session, duel);

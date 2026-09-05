@@ -46,6 +46,25 @@ export async function cancelRequest(endpoint: string, requestId: string): Promis
 
 /** Message d'erreur lisible pour l'utilisateur. */
 export function describeFalError(err: unknown): string {
+  // Le refus « personne réelle » de Seedance traverse fal tel quel
+  // (content_policy_violation / partner_validation_failed) : le traduire
+  // en clair vaut mieux qu'un « paramètres refusés » trompeur.
+  const hay = (() => {
+    try {
+      if (err instanceof ValidationError) return JSON.stringify(err.fieldErrors) + " " + err.message;
+      if (err instanceof ApiError) return (typeof err.body === "string" ? err.body : JSON.stringify(err.body ?? {})) + " " + err.message;
+      return err instanceof Error ? err.message : String(err);
+    } catch {
+      return String(err);
+    }
+  })();
+  if (/content_policy_violation|likenesses of real people|may contain real person/i.test(hay)) {
+    return (
+      "Le fournisseur du modèle a refusé l'image d'entrée : son filtre y voit une personne réelle, " +
+      "et un mannequin IA réaliste le déclenche aussi. Aucun réglage ne le lève. " +
+      "Pour animer cette image : Wan 3.0, Kling 3.0, H3 Max ou Veo."
+    );
+  }
   if (err instanceof ValidationError) {
     const details = err.fieldErrors.map((e) => `${e.loc.join(".")}: ${e.msg}`).join(" ; ");
     return `Paramètres refusés par fal.ai (${details || err.message})`;

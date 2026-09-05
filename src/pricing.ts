@@ -51,7 +51,9 @@ export async function fetchLiveUnitPrice(endpoint: string): Promise<LiveUnitPric
 export async function estimateCost(model: VideoModel, options: Options): Promise<CostEstimate> {
   const billedSeconds = model.billedSeconds(options);
   const usd = model.estimateUsd(options);
-  const live = await fetchLiveUnitPrice(model.endpoint);
+  // L'API de tarifs de fal ne connaît que les endpoints fal : pour un modèle
+  // BytePlus, « endpoint » est un id ModelArk et l'appel répondrait 400.
+  const live = model.provider === "byteplus" ? null : await fetchLiveUnitPrice(model.endpoint);
   const estimate: CostEstimate = { usd, billedSeconds };
   if (live) {
     estimate.live = live;

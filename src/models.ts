@@ -56,6 +56,22 @@ export interface VideoModel {
   /** true = le modèle attend des images de RÉFÉRENCE (2 à 4 idéalement)
    *  et non une image de départ à animer. */
   needsReferences?: boolean;
+  /** Le fournisseur refuse toute image d'ENTRÉE que son classifieur juge être
+   *  la photo d'une personne réelle — un mannequin généré par IA assez
+   *  réaliste suffit à déclencher le refus.
+   *
+   *  Mesuré le 2026-09-05 sur les deux mêmes images :
+   *    - BytePlus direct, les 3 Seedance, en first_frame ET en
+   *      reference_image → InputImageSensitiveContentDetected.PrivacyInformation
+   *    - fal, seedance-2.5/reference-to-video → content_policy_violation
+   *      (partner_validation_failed) : fal ne fait que relayer le refus
+   *    - BytePlus en text-to-video avec un sujet humain → accepté
+   *    - fal Wan 3.0 reference-to-video, mêmes images → vidéo produite
+   *
+   *  Il n'existe pas de réglage d'API ni de whitelist : la doc BytePlus ne
+   *  propose que de changer d'image. Ces modèles restent donc bons pour le
+   *  texte seul et pour les plans sans personne. */
+  refusesHumanInputImages?: boolean;
   buildInput: (args: {
     imageUrl: string;
     imageUrls: string[];
@@ -502,6 +518,7 @@ export const MODELS: VideoModel[] = [
   {
     id: "bp25",
     provider: "byteplus",
+    refusesHumanInputImages: true,
     rateDependsOnOptions: true,
     endpoint: "dreamina-seedance-2-5-260628",
     name: "Seedance 2.5 (BytePlus direct)",
@@ -548,6 +565,7 @@ export const MODELS: VideoModel[] = [
   {
     id: "bp25ref",
     provider: "byteplus",
+    refusesHumanInputImages: true,
     rateDependsOnOptions: true,
     needsReferences: true,
     endpoint: "dreamina-seedance-2-5-260628",
@@ -592,6 +610,7 @@ export const MODELS: VideoModel[] = [
   {
     id: "bp20fast",
     provider: "byteplus",
+    refusesHumanInputImages: true,
     rateDependsOnOptions: true,
     endpoint: "dreamina-seedance-2-0-fast-260128",
     name: "Seedance 2.0 fast (BytePlus)",
@@ -632,6 +651,7 @@ export const MODELS: VideoModel[] = [
   {
     id: "bp20mini",
     provider: "byteplus",
+    refusesHumanInputImages: true,
     rateDependsOnOptions: true,
     endpoint: "dreamina-seedance-2-0-mini-260615",
     name: "Seedance 2.0 mini (BytePlus)",

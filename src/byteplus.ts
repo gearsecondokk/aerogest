@@ -94,5 +94,14 @@ export function tokensPerSecond(resolution: string): number {
 }
 
 export function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/InputImageSensitiveContentDetected|may contain real person/i.test(msg)) {
+    return (
+      "Seedance a refusé l'image d'entrée : son filtre y voit une personne réelle, " +
+      "et un mannequin IA réaliste le déclenche aussi. Aucun réglage ne le lève. " +
+      "Pour animer cette image : Wan 3.0, Kling 3.0, H3 Max ou Veo. " +
+      "Seedance reste utilisable en texte seul ou sur des plans sans personne."
+    );
+  }
+  return msg;
 }

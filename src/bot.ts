@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { describeClaudeError, runAgentTurn, type AgentHooks } from "./agent.js";
 import { config } from "./config.js";
 import { cancelRequest, describeFalError, uploadImage } from "./fal.js";
-import { submitVideo } from "./provider.js";
+import { submitVideo, describeError } from "./provider.js";
 import { MODELS, defaultOptions, describeOptions, getModel } from "./models.js";
 import { estimateCost, formatUsd } from "./pricing.js";
 import type { HistoryMessage, Job, PendingDuel, PendingGeneration, Session, Store } from "./store.js";
@@ -421,8 +421,11 @@ export function createBot(store: Store): Bot {
       const c = await duelLineCost(id, duel.options);
       const on = duel.selected.includes(id);
       if (on) total += c;
-      lines.push(`${on ? "☑️" : "☐"} <b>${esc(m.name)}</b> — ${formatUsd(c)}`);
-      kb.text(`${on ? "☑️" : "☐"} ${m.name} · ${c.toFixed(2)} $`, `duel:t:${id}`).row();
+      // Seedance refuse les images de personnes : autant le dire sur la carte
+      // plutôt que de laisser un concurrent mourir au lancement.
+      const veto = duel.withImages && m.refusesHumanInputImages;
+      lines.push(`${on ? "☑️" : "☐"} <b>${esc(m.name)}</b> — ${formatUsd(c)}${veto ? " 🚫 <i>refusera une image de personne</i>" : ""}`);
+      kb.text(`${on ? "☑️" : "☐"} ${m.name}${veto ? " 🚫" : ""} · ${c.toFixed(2)} $`, `duel:t:${id}`).row();
     }
     const cap = config.MAX_COST_PER_DUEL_USD ?? config.MAX_COST_PER_VIDEO_USD * 4;
     const over = total > cap;
@@ -477,7 +480,7 @@ export function createBot(store: Store): Bot {
         requestId = await submitVideo(model.provider ?? "fal", model.endpoint, input);
       } catch (err) {
         // Un concurrent qui tombe ne doit pas faire échouer tout le duel.
-        await ctx.reply(`⚠️ ${esc(model.name)} n'a pas pu être lancé : ${esc(describeFalError(err))}`, { parse_mode: "HTML" });
+        await ctx.reply(`⚠️ ${esc(model.name)} n'a pas pu être lancé : ${esc(describeError(model.provider ?? "fal", err))}`, { parse_mode: "HTML" });
         continue;
       }
       const est = await estimateCost(model, opts);
@@ -532,8 +535,8 @@ export function createBot(store: Store): Bot {
     try {
       requestId = await submitVideo(model.provider ?? "fal", model.endpoint, input);
     } catch (err) {
-      console.error("Erreur submit fal :", err);
-      const reason = describeFalError(err);
+      console.error("Erreur submit :", err);
+      const reason = describeError(model.provider ?? "fal", err);
       await ctx.reply(`❌ Impossible de lancer la génération : ${esc(reason)}`, { parse_mode: "HTML" });
       await converse(ctx, session, {
         role: "user",
@@ -549,6 +552,7 @@ export function createBot(store: Store): Bot {
       requestId,
       modelId: model.id,
       endpoint: model.endpoint,
+      provider: model.provider ?? "fal",
       input,
       prompt: pending.prompt,
       estimateUsd: pending.estimateUsd,
