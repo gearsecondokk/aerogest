@@ -25,7 +25,6 @@ const SKIN = /(skin texture|pores|uneven skin|blemish|unretouched|no retouch|no 
 
 /** Défauts amateur concrets — chaque entrée est une famille distincte. */
 const DEFECTS: Array<[string, RegExp]> = [
-  ["cadrage décentré / penché", /(off-?cent(er|re)|slightly tilted|crooked|tilt(ed)? (horizon|frame)|awkward(ly)? (framed|cropped)|cuts? off)/i],
   ["autofocus qui cherche", /(autofocus|focus hunt|refocus|briefly out of focus|soft focus for a moment)/i],
   ["flou de mouvement", /(motion blur|blurr?ed (frame|hand|movement))/i],
   ["exposition ratée", /(blown[- ]out|blown highlights|over-?exposed|under-?exposed|uneven exposure|clipped highlights|too dark|too bright)/i],
@@ -36,9 +35,15 @@ const DEFECTS: Array<[string, RegExp]> = [
 ];
 
 const SUGGEST_VIDEO =
-  "Filmed by a friend on a phone, handheld and a bit unsteady, framing slightly off-center, autofocus hunting for a moment, " +
+  "Filmed by a friend on a phone, handheld and a bit unsteady, she stays fully in frame the whole time (framing just a little loose), autofocus hunting for a moment, " +
   "brief motion blur when she moves, highlights blown out by the window, mild sensor noise, no color grading, natural skin with visible pores. " +
   "No background music — only ambient sound (street, wind, room tone) and her voice.";
+
+/** Le 2026-09-05 « framing slightly off-center and a bit low » a sorti la
+ *  mannequin du cadre pendant toute la marche. Le défaut amateur ne porte
+ *  JAMAIS sur le cadrage du sujet : elle reste entière dans le champ. */
+const FRAMING_RISK = /(off-?cent(er|re)|a bit low|too low|too high|cuts? (her )?off|cropped|out of (the )?frame|partially out|head (cut|out)|loose framing|sloppy framing|awkward(ly)? framed|tilted frame|crooked)/i;
+const IN_FRAME = /((stays?|remains?|keeps?|kept|is|always) (fully |entirely |completely |whole |head to toe )?(in|inside|within) (the )?frame|fully in frame|whole body (visible|in frame)|framed head to toe|never cropped)/i;
 
 /** Règle de l'utilisateur (2026-09-05) : JAMAIS de musique de fond. Les modèles à
  *  audio natif (Seedance, Wan 3.0, Kling, Veo, H3) en ajoutent volontiers si on ne
@@ -46,7 +51,7 @@ const SUGGEST_VIDEO =
 const MUSIC_FORBID = /\b(no|without|zero|never any)\s+(background\s+|added\s+)?(music|bgm|soundtrack|score)\b/i;
 const MUSIC_ASK = /\b(background music|bgm|soundtrack|musical score|upbeat music|music (playing|plays|swells|starts)|lo-?fi beats?|beat drops?)\b/i;
 const SUGGEST_IMAGE =
-  "Candid unretouched phone snapshot, framing slightly off-center, uneven available light with a blown-out window, mild noise, " +
+  "Candid unretouched phone snapshot, she is fully in frame with a slightly casual composition, uneven available light with a blown-out window, mild noise, " +
   "visible pores and a few stray hairs.";
 
 /** Occurrences d'un mot banni, sauf quand il est nié juste avant
@@ -73,6 +78,9 @@ export function realismIssues(prompt: string, kind: MediaKind = "video"): string
   if (banned.length) problems.push(`vocabulaire cinéma/pub interdit : ${[...new Set(banned.map((b) => b.toLowerCase()))].join(", ")}`);
   if (!CAMERA.test(prompt)) problems.push("aucune mention d'un téléphone tenu à la main (phone / handheld / filmed by a friend)");
   if (!SKIN.test(prompt)) problems.push("aucune mention de peau réelle (visible pores / uneven skin / unretouched)");
+  if (FRAMING_RISK.test(prompt) && !IN_FRAME.test(prompt)) {
+    problems.push("le défaut amateur ne doit JAMAIS porter sur le cadrage du sujet : retire « off-center / a bit low / cropped » et écris « she stays fully in frame the whole time » — les imperfections viennent de la mise au point, de l'exposition, du bruit et du tremblé");
+  }
   if (kind === "video") {
     const asked = bannedHits(prompt, MUSIC_ASK);
     if (asked.length) problems.push(`musique de fond demandée (${asked.join(", ")}) : INTERDIT, l'utilisateur ne veut jamais de musique`);
@@ -82,7 +90,7 @@ export function realismIssues(prompt: string, kind: MediaKind = "video"): string
   const need = kind === "video" ? 2 : 1;
   if (found.length < need) {
     problems.push(
-      `il faut au moins ${need} défaut${need > 1 ? "s" : ""} amateur concret${need > 1 ? "s" : ""} (${found.length} trouvé${found.length > 1 ? "s" : ""}${found.length ? " : " + found.join(", ") : ""}) — cadrage décentré, autofocus qui cherche, flou de mouvement, hautes lumières brûlées, bruit, caméra instable`,
+      `il faut au moins ${need} défaut${need > 1 ? "s" : ""} amateur concret${need > 1 ? "s" : ""} (${found.length} trouvé${found.length > 1 ? "s" : ""}${found.length ? " : " + found.join(", ") : ""}) — autofocus qui cherche, flou de mouvement, hautes lumières brûlées, bruit de capteur, caméra qui tremble, balance des blancs ratée (jamais le cadrage du sujet)`,
     );
   }
   if (problems.length === 0) return null;

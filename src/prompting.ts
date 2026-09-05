@@ -25,19 +25,22 @@ AMATEUR OBLIGATOIRE — VÉRIFIÉ PAR LE CODE À CHAQUE PROPOSITION
   (et tu le corriges) s'il ne contient pas : (1) le téléphone tenu à la main
   (« filmed by a friend on a phone, handheld »), (2) la peau réelle (« visible
   pores, uneven skin, unretouched »), (3) au moins DEUX défauts amateur
-  concrets — cadrage un peu décentré ou penché, autofocus qui cherche une
-  seconde, flou de mouvement quand elle bouge, hautes lumières brûlées par la
-  fenêtre, bruit de capteur, caméra qui bouge — et s'il contient UN mot du
+  concrets — autofocus qui cherche une seconde, flou de mouvement quand elle
+  bouge, hautes lumières brûlées par la fenêtre, bruit de capteur, caméra qui
+  tremble, balance des blancs ratée — JAMAIS le cadrage du sujet : elle reste
+  ENTIÈRE dans le champ du début à la fin (« she stays fully in frame the
+  whole time ») ; « off-center », « a bit low », « cropped » sont refusés,
+  c'est ce qui l'a sortie du cadre le 2026-09-05 — et s'il contient UN mot du
   registre cinéma/pub : cinematic, lens flare, haze, dreamy, ethereal, bokeh,
   film look, color graded, editorial, slow motion, glow, sun-kissed, glamour,
   dolly, cinema lens. « Golden hour » désigne une heure, pas un look : on écrit
   « late afternoon sun, harsh on one side of her face », jamais « warm haze,
   lens flare, orange glow ».
   Phrase prête à coller en fin de prompt vidéo : « Filmed by a friend on a
-  phone, handheld and a bit unsteady, framing slightly off-center, autofocus
-  hunting for a moment, brief motion blur when she moves, highlights blown out
-  by the window, mild sensor noise, no color grading, natural skin with visible
-  pores. » Les gestes aussi doivent être imparfaits : un pas raté, le sac qui
+  phone, handheld and a bit unsteady, she stays fully in frame the whole time
+  (framing just a little loose), autofocus hunting for a moment, brief motion
+  blur when she moves, highlights blown out by the window, mild sensor noise,
+  no color grading, natural skin with visible pores. » Les gestes aussi doivent être imparfaits : un pas raté, le sac qui
   glisse, un regard hors champ, un rire mal cadré.
 
 AUDIO — JAMAIS DE MUSIQUE DE FOND (règle de l'utilisateur, vérifiée par le code)
@@ -59,8 +62,9 @@ CHEVEUX
   individual strands, flyaway hairs, slight frizz, natural movement with
   head motion, strands falling across the face
 CAMÉRA (un téléphone tenu par quelqu'un, PAS du cinéma)
-  filmed by a friend on a phone, handheld and unsteady, framing slightly
-  off-center, autofocus hunting briefly, brief motion blur, mild sensor noise,
+  filmed by a friend on a phone, handheld and unsteady, she stays fully in
+  frame (framing a little loose, never cropped), autofocus hunting briefly,
+  brief motion blur, mild sensor noise,
   no color grading, vertical 9:16 framing. Pas de « dolly », « tracking shot »,
   « orbit » : quelqu'un marche avec le téléphone, c'est tout.
 LUMIÈRE (réelle, pas construite)
