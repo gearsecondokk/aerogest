@@ -135,6 +135,12 @@ const tvCost = (model: string, o: Options, def = 5): number => {
   return num(o.duration, def) * perSec * config.TOPVIEW_USD_PER_CREDIT;
 };
 
+/** Grok référence→vidéo attend <IMAGE_0>, <IMAGE_1>… (à partir de ZÉRO). Les
+ *  modèles écrivent volontiers @Image1, [Image1], « image 1 » ou <<<Image1>>>
+ *  (à partir de un) : on convertit, sans toucher aux <IMAGE_n> déjà corrects. */
+const grokRefs = (prompt: string): string =>
+  prompt.replace(/(?<![<\w])(?:<<<)?@?\[?[Ii]mage\s?(\d+)\]?(?:>>>)?(?![\w>])/g, (_, n: string) => `<IMAGE_${Math.max(0, Number(n) - 1)}>`);
+
 // ── Images : formats Instagram et helpers de taille ─────────────────────────
 
 /** Ratios proposés pour un post. Le 4:5 est le format du feed ; les modèles qui
@@ -601,6 +607,45 @@ export const MODELS: VideoModel[] = [
       image_url: imageUrl,
       duration: num(opts.duration, 6),
       resolution: String(opts.resolution ?? "720p"),
+    }),
+  },
+  {
+    id: "grok15ref",
+    rateDependsOnOptions: true,
+    needsReferences: true,
+    endpoint: "xai/grok-imagine-video/v1.5/reference-to-video",
+    name: "Grok Imagine 1.5 — référence",
+    tagline: "RÉFÉRENCE→VIDÉO xAI — 1 à 7 images, désignées <IMAGE_0>, <IMAGE_1>… dans le prompt",
+    priceSummary: "480p : 0,08 $/s · 720p : 0,14 $/s, + 0,01 $ par image de référence (pas de 1080p)",
+    options: [
+      durationOption([5, 8, 10], 8),
+      {
+        key: "resolution",
+        label: "🖥 Résolution ?",
+        choices: [
+          { value: "480p", label: "480p" },
+          { value: "720p", label: "720p" },
+        ],
+        default: "720p",
+      },
+      ratioOption(["9:16", "3:4", "2:3", "1:1", "16:9"], "9:16"),
+    ],
+    promptGuide:
+      "Grok Imagine 1.5 référence→vidéo. Désigner les images par <IMAGE_0>, <IMAGE_1>… — numérotation à partir " +
+      "de ZÉRO, dans l'ordre d'envoi (« <IMAGE_0> is the woman, <IMAGE_1> is the setting »). Langage naturel, " +
+      "tout en POSITIF (Grok ignore les negative prompts). Ici le format ne vient PAS de l'image : choisir " +
+      "9:16 explicitement. Jusqu'à 7 images.",
+    maxPromptChars: 4096,
+    billedSeconds: (o) => num(o.duration, 8),
+    // Même piège que grok15 : le tarif live de fal (0,01 $/s) est le supplément
+    // par image de référence, pas le tarif vidéo. On estime avec 2 références.
+    estimateUsd: (o) => num(o.duration, 8) * (o.resolution === "480p" ? 0.08 : 0.14) + 0.02,
+    buildInput: ({ imageUrls, prompt, opts }) => ({
+      prompt: grokRefs(prompt),
+      reference_image_urls: imageUrls.slice(0, 7),
+      duration: num(opts.duration, 8),
+      resolution: String(opts.resolution ?? "720p"),
+      aspect_ratio: String(opts.aspect_ratio ?? "9:16"),
     }),
   },
   {
